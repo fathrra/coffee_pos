@@ -40,4 +40,19 @@ class DashboardController extends Controller
     {
         return view('app', ['activePage' => 'laporan']);
     }
+
+    public function inventory()
+    {
+        return view('app', ['activePage' => 'inventory']);
+    }
+
+    public function resep()
+    {
+        return view('app', ['activePage' => 'resep']);
+    }
+
+    public function users()
+    {
+        return view('app', ['activePage' => 'users']);
+    }
 }

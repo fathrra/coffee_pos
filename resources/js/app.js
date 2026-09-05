@@ -12,6 +12,21 @@ const APP = {
     reportPeriod: 7,
     salesChartInstance: null,
     reportChartInstance: null,
+    users: [],
+    ingredients: [],
+    suppliers: [],
+    recipeData: [],
+    invSummary: null,
+    invTab: 'ingredients',
+    invPeriod: 'today',
+    stockInHistory: [],
+    stockOutHistory: [],
+    adjustHistory: [],
+    resepRows: [],
+    invReport: null,
+    recipeReport: null,
+    invReportLoaded: false,
+    lowStockLoaded: false,
 };
 
 /* ============================ INIT ============================ */
@@ -29,12 +44,17 @@ document.addEventListener('DOMContentLoaded', () => {
     loadCategories();
     loadProducts();
     loadTransactions();
+    loadUsers();
     seedHistory();
+    loadInventoryContext();
 
     setupNav();
     setupKasir();
     setupProduk();
     setupKategori();
+    setupUsers();
+    setupInventory();
+    setupResep();
     renderAll();
 });
 
@@ -102,6 +122,92 @@ async function loadTransactions() {
     } catch (e) {
         APP.transactions = [];
     }
+}
+
+async function loadUsers() {
+    try {
+        const data = await apiFetch('/users');
+        APP.users = data.data || data;
+    } catch (e) {
+        APP.users = [];
+    }
+}
+
+/* ============================ INVENTORY DATA ============================ */
+async function loadIngredients() {
+    try {
+        const data = await apiFetch('/ingredients?per_page=200');
+        APP.ingredients = data.data || (Array.isArray(data) ? data : []);
+    } catch (e) {
+        APP.ingredients = [];
+    }
+}
+
+async function loadSuppliers() {
+    try {
+        const data = await apiFetch('/suppliers?per_page=200');
+        APP.suppliers = data.data || (Array.isArray(data) ? data : []);
+    } catch (e) {
+        APP.suppliers = [];
+    }
+}
+
+async function loadRecipeData() {
+    try {
+        const data = await apiFetch('/recipes?per_page=200');
+        APP.recipeData = data.data || (Array.isArray(data) ? data : []);
+    } catch (e) {
+        APP.recipeData = [];
+    }
+}
+
+async function loadStockInHistory() {
+    try {
+        const data = await apiFetch('/stock-in?per_page=50');
+        APP.stockInHistory = data.data || (Array.isArray(data) ? data : []);
+    } catch (e) {
+        APP.stockInHistory = [];
+    }
+}
+
+async function loadStockOutHistory() {
+    try {
+        const data = await apiFetch('/stock-out?per_page=50');
+        APP.stockOutHistory = data.data || (Array.isArray(data) ? data : []);
+    } catch (e) {
+        APP.stockOutHistory = [];
+    }
+}
+
+async function loadAdjustHistory() {
+    try {
+        const data = await apiFetch('/stock-adjustments?per_page=50');
+        APP.adjustHistory = data.data || (Array.isArray(data) ? data : []);
+    } catch (e) {
+        APP.adjustHistory = [];
+    }
+}
+
+async function loadInventorySummary() {
+    try {
+        APP.invSummary = await apiFetch('/inventory/summary');
+    } catch (e) {
+        APP.invSummary = null;
+    }
+}
+
+async function loadInventoryContext() {
+    APP.invReportLoaded = false;
+    APP.lowStockLoaded = false;
+    await Promise.allSettled([
+        loadIngredients(),
+        loadSuppliers(),
+        loadRecipeData(),
+        loadStockInHistory(),
+        loadStockOutHistory(),
+        loadAdjustHistory(),
+        loadInventorySummary(),
+    ]);
 }
 
 /* ============================ SEED HISTORY (demo) ============================ */
@@ -179,7 +285,12 @@ function setupNav() {
             const page = btn.dataset.page;
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.getElementById('page-' + page).classList.add('active');
-            renderAll();
+
+            if (APP.user.role === 'admin' && ['inventory', 'resep', 'dashboard'].includes(page)) {
+                loadInventoryContext().finally(() => renderAll());
+            } else {
+                renderAll();
+            }
         });
     });
 
@@ -420,8 +531,9 @@ async function processPayment() {
             }),
         });
 
+        const tx = data.data || data;
         APP.transactions.unshift({
-            ...data.data || data,
+            ...tx,
             date: new Date(),
             details,
             invoice_number: invoice,
@@ -435,28 +547,20 @@ async function processPayment() {
             cashier: APP.user.name,
         });
 
-        // Deduct stock locally
-        details.forEach(d => {
-            const p = APP.products.find(p => p.id == d.product_id);
-            if (p) p.stock -= d.quantity;
-        });
+        // Refresh stock (menu stock is computed from recipes on the server)
+        await Promise.allSettled([loadProducts(), loadInventoryContext()]);
     } catch (e) {
-        // Fallback: deduct locally even if API fails (demo mode)
-        APP.transactions.unshift({
-            id: APP.nextTxId++,
-            invoice_number: invoice,
-            customer_name: customerName,
-            cashier: APP.user.name,
-            details, subtotal: sums.subtotal, discount: sums.discount, tax: sums.tax,
-            total: sums.total, paid_amount: sums.cash, change_amount: sums.change, date: now,
-        });
-        details.forEach(d => {
-            const p = APP.products.find(p => p.id == d.product_id);
-            if (p) p.stock -= d.quantity;
-        });
+        showToast(e.message || 'Transaksi gagal disimpan. Stok tidak mencukupi?');
+        return;
     }
 
+    // Store last transaction ID for PDF receipt
+    APP.lastTransactionId = data && data.id ? data.id : null;
+
     // Show receipt
+    const receiptId = (data && data.id) ? data.id : null;
+    const baseUrl = window.__base_url || window.location.origin;
+
     document.getElementById('struk-content').innerHTML = `
         <div style="text-align:center;margin-bottom:14px;">
             <div style="font-size:22px;">&#9749; CoffeePOS</div>
@@ -475,6 +579,7 @@ async function processPayment() {
             <div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span>Cash</span><span>${rupiah(sums.cash)}</span></div>
             <div style="display:flex;justify-content:space-between;font-weight:700;color:var(--green);"><span>Kembalian</span><span>${rupiah(sums.change)}</span></div>
         </div>
+        ${receiptId ? `<div style="text-align:center;margin-top:14px;"><a href="${baseUrl}/transactions/${receiptId}/receipt" target="_blank" class="btn btn-primary" style="display:inline-block;text-decoration:none;padding:8px 16px;">Unduh Struk PDF</a></div>` : ''}
     `;
     openModal('modal-struk');
 
@@ -718,6 +823,7 @@ async function saveStokAdjust() {
     const id = Number(document.getElementById('stok-produk-id').value);
     const jenis = document.getElementById('stok-jenis').value;
     const jumlah = Number(document.getElementById('stok-jumlah').value) || 0;
+    const deskripsi = document.getElementById('stok-deskripsi') ? document.getElementById('stok-deskripsi').value.trim() : '';
     const p = APP.products.find(p => p.id === id);
     if (jumlah <= 0) { showToast('Jumlah harus lebih dari 0.'); return; }
     if (jenis === 'tambah') {
@@ -764,6 +870,11 @@ function renderLaporan() {
             document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             APP.reportPeriod = Number(btn.dataset.period);
+            const baseUrl = window.__base_url || window.location.origin;
+            const pdfBtn = document.getElementById('btn-export-pdf');
+            const csvBtn = document.getElementById('btn-export-csv');
+            if (pdfBtn) pdfBtn.href = baseUrl + '/reports/export-pdf?period=' + APP.reportPeriod;
+            if (csvBtn) csvBtn.href = baseUrl + '/reports/export-csv?period=' + APP.reportPeriod;
             renderLaporan();
         };
     });
@@ -827,6 +938,775 @@ function renderLaporan() {
     });
 }
 
+/* ============================ USER MANAGEMENT ============================ */
+function renderUsers() {
+    document.getElementById('users-table').innerHTML = APP.users.map(u => `
+        <tr>
+            <td style="font-weight:700;">${u.name}</td>
+            <td>${u.email}</td>
+            <td><span class="badge ${u.role === 'admin' ? 'badge-green' : 'badge-yellow'}">${u.role === 'admin' ? 'Admin' : 'Kasir'}</span></td>
+            <td>${fmtDateShort(u.created_at)}</td>
+            <td style="white-space:nowrap;">
+                <button class="icon-btn" onclick="editUser(${u.id})">Edit</button>
+                <button class="icon-btn danger" onclick="deleteUser(${u.id})">Hapus</button>
+            </td>
+        </tr>
+    `).join('') || `<tr><td colspan="5"><div class="empty-state"><div class="em-ic">&#128100;</div>Belum ada user.</div></td></tr>`;
+}
+
+function setupUsers() {
+    document.getElementById('btn-add-user').addEventListener('click', () => {
+        document.getElementById('user-modal-title').textContent = 'Tambah User';
+        document.getElementById('user-id').value = '';
+        document.getElementById('user-nama').value = '';
+        document.getElementById('user-email').value = '';
+        document.getElementById('user-password').value = '';
+        document.getElementById('user-password-confirm').value = '';
+        document.getElementById('user-role').value = 'kasir';
+        openModal('modal-user');
+    });
+}
+
+function editUser(id) {
+    const u = APP.users.find(u => u.id === id);
+    if (!u) return;
+    document.getElementById('user-modal-title').textContent = 'Edit User';
+    document.getElementById('user-id').value = u.id;
+    document.getElementById('user-nama').value = u.name;
+    document.getElementById('user-email').value = u.email;
+    document.getElementById('user-password').value = '';
+    document.getElementById('user-password-confirm').value = '';
+    document.getElementById('user-role').value = u.role;
+    openModal('modal-user');
+}
+
+async function saveUser() {
+    const id = document.getElementById('user-id').value;
+    const name = document.getElementById('user-nama').value.trim();
+    const email = document.getElementById('user-email').value.trim();
+    const password = document.getElementById('user-password').value;
+    const password_confirmation = document.getElementById('user-password-confirm').value;
+    const role = document.getElementById('user-role').value;
+
+    if (!name) { showToast('Nama wajib diisi.'); return; }
+    if (!email) { showToast('Email wajib diisi.'); return; }
+    if (!id && !password) { showToast('Password wajib diisi.'); return; }
+    if (password && password !== password_confirmation) { showToast('Konfirmasi password tidak cocok.'); return; }
+
+    try {
+        const payload = { name, email, role };
+        if (password) { payload.password = password; payload.password_confirmation = password_confirmation; }
+
+        if (id) {
+            await apiFetch(`/users/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+            const idx = APP.users.findIndex(u => u.id == id);
+            if (idx >= 0) APP.users[idx] = { ...APP.users[idx], name, email, role };
+            showToast('User berhasil diperbarui.');
+        } else {
+            const data = await apiFetch('/users', { method: 'POST', body: JSON.stringify(payload) });
+            APP.users.push(data.data || { id: Date.now(), name, email, role });
+            showToast('User berhasil ditambahkan.');
+        }
+    } catch (e) {
+        if (!id) {
+            APP.users.push({ id: Date.now(), name, email, role });
+            showToast('User berhasil ditambahkan.');
+        } else {
+            showToast('Gagal memperbarui user.');
+        }
+    }
+    closeModal('modal-user');
+    renderUsers();
+}
+
+async function deleteUser(id) {
+    if (!confirm('Hapus user ini?')) return;
+    try { await apiFetch(`/users/${id}`, { method: 'DELETE' }); } catch (e) {}
+    APP.users = APP.users.filter(u => u.id !== id);
+    renderUsers();
+    showToast('User dihapus.');
+}
+
+/* ============================ INVENTORY ============================ */
+function fmtQty(n) {
+    const v = Number(n) || 0;
+    if (Number.isInteger(v)) return v.toLocaleString('id-ID');
+    return v.toLocaleString('id-ID', { maximumFractionDigits: 2 });
+}
+function ingStatus(ing) {
+    const stock = Number(ing.current_stock) || 0;
+    if (stock <= 0) return { label: 'Stok Habis', cls: 'badge-red' };
+    if (stock <= (Number(ing.minimum_stock) || 0)) return { label: 'Stok Menipis', cls: 'badge-yellow' };
+    return { label: 'Stok Aman', cls: 'badge-green' };
+}
+function setInvTab(tab) {
+    APP.invTab = tab;
+    document.querySelectorAll('#inv-tabs .cat-tab').forEach(b => b.classList.toggle('active', b.dataset.invtab === tab));
+    document.querySelectorAll('#page-inventory .subview').forEach(v => v.classList.toggle('active', v.id === 'inv-view-' + tab));
+}
+function renderInventoryStats() {
+    const s = APP.invSummary;
+    const grid = document.getElementById('inv-stat-grid');
+    if (grid) {
+        grid.innerHTML = s ? `
+            <div class="card stat-card"><div class="stat-label">Total Bahan</div><div class="stat-value">${s.total_ingredients}</div><div class="stat-delta">${s.active_ingredients} aktif</div></div>
+            <div class="card stat-card"><div class="stat-label">Stok Menipis</div><div class="stat-value">${s.low_stock}</div><div class="stat-delta">di bawah minimum</div></div>
+            <div class="card stat-card"><div class="stat-label">Out of Stock</div><div class="stat-value">${s.out_of_stock}</div><div class="stat-delta">stok habis</div></div>
+            <div class="card stat-card"><div class="stat-label">Total Nilai Inventory</div><div class="stat-value" style="font-size:19px;">${rupiah(s.total_value)}</div><div class="stat-delta">${s.products_with_recipe} menu punya resep</div></div>
+        ` : '<div class="card stat-card"><div class="stat-label">Total Bahan</div><div class="stat-value">-</div></div>';
+    }
+    const dash = document.getElementById('dash-inv-stats');
+    if (dash) {
+        dash.innerHTML = s ? `
+            <div class="card stat-card"><div class="stat-label">Total Bahan</div><div class="stat-value">${s.total_ingredients}</div><div class="stat-delta">bahan aktif</div></div>
+            <div class="card stat-card"><div class="stat-label">Stok Menipis</div><div class="stat-value">${s.low_stock}</div><div class="stat-delta">di bawah minimum</div></div>
+            <div class="card stat-card"><div class="stat-label">Out of Stock</div><div class="stat-value">${s.out_of_stock}</div><div class="stat-delta">stok habis</div></div>
+            <div class="card stat-card"><div class="stat-label">Nilai Inventory</div><div class="stat-value" style="font-size:19px;">${rupiah(s.total_value)}</div><div class="stat-delta">estimasi</div></div>
+        ` : '';
+    }
+}
+
+function renderBahanTable() {
+    const search = (document.getElementById('bahan-search')?.value || '').toLowerCase();
+    const status = document.getElementById('bahan-filter-status')?.value || 'all';
+    let list = APP.ingredients.filter(i => i.name.toLowerCase().includes(search));
+    if (status === 'inactive') list = list.filter(i => !i.is_active);
+    else if (status === 'good') list = list.filter(i => i.is_active && (Number(i.current_stock) > (Number(i.minimum_stock))));
+    else if (status === 'low') list = list.filter(i => i.is_active && (Number(i.current_stock) > 0 && Number(i.current_stock) <= Number(i.minimum_stock)));
+    else if (status === 'out') list = list.filter(i => Number(i.current_stock) <= 0);
+    else list = list.filter(i => i.is_active);
+
+    const wrap = document.getElementById('bahan-table');
+    if (!wrap) return;
+    wrap.innerHTML = list.map(i => {
+        const s = ingStatus(i);
+        return `<tr>
+            <td><div class="cell-flex"><span class="prod-thumb">&#129519;</span><span style="font-weight:700;">${i.name}</span></div></td>
+            <td>${i.unit}</td>
+            <td>${fmtQty(i.current_stock)}</td>
+            <td class="muted">${fmtQty(i.minimum_stock)}</td>
+            <td>${rupiah(i.cost_per_unit)}</td>
+            <td class="muted">${rupiah((Number(i.current_stock) || 0) * (Number(i.cost_per_unit) || 0))}</td>
+            <td><span class="badge ${s.cls}">${s.label}</span></td>
+            <td class="muted">${i.recipe_ingredients_count || 0} resep</td>
+            <td style="white-space:nowrap;">
+                <button class="icon-btn" onclick="editBahan(${i.id})">Edit</button>
+                <button class="icon-btn" onclick="toggleBahan(${i.id})">${i.is_active ? 'Nonaktifkan' : 'Aktifkan'}</button>
+                <button class="icon-btn danger" onclick="deleteBahan(${i.id})">Hapus</button>
+            </td>
+        </tr>`;
+    }).join('') || `<tr><td colspan="9"><div class="empty-state"><div class="em-ic">&#129519;</div>Belum ada bahan baku.</div></td></tr>`;
+}
+
+function renderSuppliersTable() {
+    const search = (document.getElementById('supplier-search')?.value || '').toLowerCase();
+    const list = APP.suppliers.filter(s =>
+        s.name.toLowerCase().includes(search) ||
+        (s.email || '').toLowerCase().includes(search) ||
+        (s.phone || '').toLowerCase().includes(search)
+    );
+    const wrap = document.getElementById('supplier-table');
+    if (!wrap) return;
+    wrap.innerHTML = list.map(s => `
+        <tr>
+            <td style="font-weight:700;">${s.name}</td>
+            <td>${s.phone || '-'}</td>
+            <td class="muted">${s.email || '-'}</td>
+            <td class="muted">${s.address || '-'}</td>
+            <td class="muted">${s.notes || '-'}</td>
+            <td><span class="badge ${s.is_active ? 'badge-green' : 'badge-red'}">${s.is_active ? 'Aktif' : 'Nonaktif'}</span></td>
+            <td style="white-space:nowrap;">
+                <button class="icon-btn" onclick="editSupplier(${s.id})">Edit</button>
+                <button class="icon-btn danger" onclick="deleteSupplier(${s.id})">Hapus</button>
+            </td>
+        </tr>
+    `).join('') || `<tr><td colspan="7"><div class="empty-state"><div class="em-ic">&#128230;</div>Belum ada supplier.</div></td></tr>`;
+}
+
+function fillIngredientSelect(el, selectedId) {
+    el.innerHTML = APP.ingredients.filter(i => i.is_active).map(i =>
+        `<option value="${i.id}">${i.name} (${fmtQty(i.current_stock)} ${i.unit})</option>`
+    ).join('');
+    if (selectedId) el.value = selectedId;
+}
+function fillSupplierSelect(el, selectedId) {
+    el.innerHTML = `<option value="">— Pilih Supplier —</option>` + APP.suppliers.filter(s => s.is_active).map(s =>
+        `<option value="${s.id}">${s.name}</option>`
+    ).join('');
+    if (selectedId) el.value = selectedId;
+}
+
+function renderStockIn() {
+    fillSupplierSelect(document.getElementById('stockin-supplier'));
+    fillIngredientSelect(document.getElementById('stockin-ingredient'));
+    renderStockInHistory();
+}
+function renderStockInHistory() {
+    const wrap = document.getElementById('stockin-table');
+    if (!wrap) return;
+    wrap.innerHTML = APP.stockInHistory.map(m => `
+        <tr>
+            <td class="muted">${fmtDateShort(m.created_at)}</td>
+            <td>${m.ingredient ? m.ingredient.name : '-'}</td>
+            <td>+${fmtQty(m.quantity)} ${m.ingredient?.unit || ''}</td>
+            <td>${fmtQty(m.after_stock)}</td>
+            <td class="muted">${m.user ? m.user.name : '-'}</td>
+        </tr>
+    `).join('') || `<tr><td colspan="5"><div class="empty-state"><div class="em-ic">&#128230;</div>Belum ada stok masuk.</div></td></tr>`;
+}
+
+function renderStockOut() {
+    fillIngredientSelect(document.getElementById('stockout-ingredient'));
+    updateStockOutHint();
+    renderStockOutHistory();
+}
+function updateStockOutHint() {
+    const id = document.getElementById('stockout-ingredient').value;
+    const ing = APP.ingredients.find(i => i.id == id);
+    document.getElementById('stockout-current').textContent = ing
+        ? `Stok saat ini: ${fmtQty(ing.current_stock)} ${ing.unit}`
+        : '';
+}
+function renderStockOutHistory() {
+    const wrap = document.getElementById('stockout-table');
+    if (!wrap) return;
+    wrap.innerHTML = APP.stockOutHistory.map(m => `
+        <tr>
+            <td class="muted">${fmtDateShort(m.created_at)}</td>
+            <td>${m.ingredient ? m.ingredient.name : '-'}</td>
+            <td>-${fmtQty(m.quantity)} ${m.ingredient?.unit || ''}</td>
+            <td class="muted">${m.reason || '-'}</td>
+            <td class="muted">${m.user ? m.user.name : '-'}</td>
+        </tr>
+    `).join('') || `<tr><td colspan="5"><div class="empty-state"><div class="em-ic">&#128230;</div>Belum ada stok keluar.</div></td></tr>`;
+}
+
+function renderAdjust() {
+    fillIngredientSelect(document.getElementById('adjust-ingredient'));
+    updateAdjustStock();
+    renderAdjustHistory();
+}
+function updateAdjustStock() {
+    const id = document.getElementById('adjust-ingredient')?.value;
+    const ing = APP.ingredients.find(i => i.id == id);
+    if (!ing) return;
+    document.getElementById('adjust-system-stock').value = ing.current_stock;
+    document.getElementById('adjust-actual-stock').value = ing.current_stock;
+    updateAdjustDiff();
+}
+function updateAdjustDiff() {
+    const system = Number(document.getElementById('adjust-system-stock').value) || 0;
+    const actual = Number(document.getElementById('adjust-actual-stock').value) || 0;
+    const diff = actual - system;
+    document.getElementById('adjust-diff').value = (diff > 0 ? '+' : '') + fmtQty(diff);
+}
+function renderAdjustHistory() {
+    const wrap = document.getElementById('adjust-table');
+    if (!wrap) return;
+    wrap.innerHTML = APP.adjustHistory.map(m => {
+        const diff = Number(m.quantity) || 0;
+        return `<tr>
+            <td class="muted">${fmtDateShort(m.created_at)}</td>
+            <td>${m.ingredient ? m.ingredient.name : '-'}</td>
+            <td>${diff > 0 ? '+' : ''}${fmtQty(diff)}</td>
+            <td>${fmtQty(m.before_stock)}</td>
+            <td>${fmtQty(m.after_stock)}</td>
+            <td class="muted">${m.reason || '-'}</td>
+        </tr>`;
+    }).join('') || `<tr><td colspan="6"><div class="empty-state"><div class="em-ic">&#128230;</div>Belum ada penyesuaian stok.</div></td></tr>`;
+}
+
+function renderLowStock() {
+    if (APP.lowStockLoaded) return;
+    loadLowStockData();
+}
+async function loadLowStockData() {
+    try {
+        const data = await apiFetch('/inventory/low-stock');
+        const wrap = document.getElementById('lowstock-table');
+        if (!wrap) return;
+        wrap.innerHTML = data.map(i => {
+            const s = ingStatus(i);
+            return `<tr>
+                <td style="font-weight:700;">${i.name}</td>
+                <td>${i.unit}</td>
+                <td>${fmtQty(i.current_stock)}</td>
+                <td>${fmtQty(i.minimum_stock)}</td>
+                <td><span class="badge ${s.cls}">${s.label}</span></td>
+            </tr>`;
+        }).join('') || `<tr><td colspan="5"><div class="empty-state"><div class="em-ic">&#128994;</div>Semua stok dalam kondisi aman.</div></td></tr>`;
+        APP.lowStockLoaded = true;
+    } catch (e) {}
+}
+
+function renderInventoryReport() {
+    if (APP.invReportLoaded) return;
+    const customWrap = document.getElementById('inv-report-custom');
+    customWrap.style.display = APP.invPeriod === 'custom' ? 'flex' : 'none';
+
+    const range = invReportRange();
+    Promise.all([
+        apiFetch(`/reports/inventory?from=${range.from}&to=${range.to}`).then(data => {
+            APP.invReport = data;
+            document.getElementById('inv-report-stats').innerHTML = `
+                <div class="card stat-card"><div class="stat-label">Total Stok Masuk</div><div class="stat-value">${fmtQty(data.totals.stock_in)}</div></div>
+                <div class="card stat-card"><div class="stat-label">Total Stok Keluar</div><div class="stat-value">${fmtQty(data.totals.stock_out)}</div></div>
+                <div class="card stat-card"><div class="stat-label">Total Terpakai (Jual)</div><div class="stat-value">${fmtQty(data.totals.usage)}</div></div>
+                <div class="card stat-card"><div class="stat-label">Total Penyesuaian</div><div class="stat-value">${fmtQty(data.totals.adjustment)}</div></div>
+            `;
+            document.getElementById('inv-report-table').innerHTML = data.rows.map(r => `
+                <tr>
+                    <td style="font-weight:700;">${r.name}</td>
+                    <td>+${fmtQty(r.stock_in)}</td>
+                    <td>${r.stock_out ? '-' + fmtQty(r.stock_out) : '0'}</td>
+                    <td>${r.usage ? '-' + fmtQty(r.usage) : '0'}</td>
+                    <td>${(Number(r.adjustment) > 0 ? '+' : '') + fmtQty(r.adjustment)}</td>
+                    <td>${fmtQty(r.current_stock)} ${r.unit}</td>
+                    <td class="muted">${rupiah(r.total_value)}</td>
+                </tr>
+            `).join('') || `<tr><td colspan="7"><div class="empty-state">Tidak ada data.</div></td></tr>`;
+        }).catch(() => {
+            document.getElementById('inv-report-table').innerHTML = `<tr><td colspan="7"><div class="empty-state">Gagal memuat laporan.</div></td></tr>`;
+        }),
+        apiFetch(`/reports/inventory/recipes`).then(data => {
+            APP.recipeReport = data;
+            document.getElementById('recipe-report-table').innerHTML = data.rows.map(r => `
+                <tr>
+                    <td style="font-weight:700;">${r.name}</td>
+                    <td>${rupiah(r.recipe_cost)}</td>
+                    <td>${rupiah(r.price)}</td>
+                    <td style="color:var(--green);font-weight:700;">${rupiah(r.profit)}</td>
+                    <td>${Number(r.margin).toFixed(2)}%</td>
+                    <td>${fmtQty(r.stock)}</td>
+                </tr>
+            `).join('') || `<tr><td colspan="6"><div class="empty-state">Belum ada resep.</div></td></tr>`;
+        }).catch(() => {}),
+    ]).finally(() => { APP.invReportLoaded = true; });
+}
+function invReportRange() {
+    const now = new Date();
+    const iso = d => d.toISOString().slice(0, 10);
+    let from, to;
+    if (APP.invPeriod === 'today') { from = to = iso(now); }
+    else if (APP.invPeriod === '7') { from = iso(new Date(now.getTime() - 6 * 86400000)); to = iso(now); }
+    else if (APP.invPeriod === '30') { from = iso(new Date(now.getTime() - 29 * 86400000)); to = iso(now); }
+    else {
+        from = document.getElementById('inv-report-from')?.value || iso(now);
+        to = document.getElementById('inv-report-to')?.value || iso(now);
+    }
+    return { from, to };
+}
+
+async function saveStockIn() {
+    const payload = {
+        supplier_id: document.getElementById('stockin-supplier').value || null,
+        ingredient_id: document.getElementById('stockin-ingredient').value,
+        quantity: Number(document.getElementById('stockin-qty').value) || 0,
+        unit_cost: document.getElementById('stockin-cost').value || null,
+        date: document.getElementById('stockin-date').value || null,
+        notes: document.getElementById('stockin-notes').value.trim() || null,
+    };
+    if (!payload.ingredient_id) { showToast('Pilih bahan terlebih dahulu.'); return; }
+    if (payload.quantity <= 0) { showToast('Jumlah harus lebih dari 0.'); return; }
+    try {
+        await apiFetch('/stock-in', { method: 'POST', body: JSON.stringify(payload) });
+        showToast('Stok masuk berhasil disimpan.');
+        document.getElementById('stockin-qty').value = '';
+        document.getElementById('stockin-cost').value = '';
+        document.getElementById('stockin-notes').value = '';
+        await loadInventoryContext();
+        renderAll();
+    } catch (e) {
+        showToast(e.message || 'Gagal menyimpan stok masuk.');
+    }
+}
+
+async function saveStockOut() {
+    const payload = {
+        ingredient_id: document.getElementById('stockout-ingredient').value,
+        quantity: Number(document.getElementById('stockout-qty').value) || 0,
+        reason: document.getElementById('stockout-reason').value,
+        notes: document.getElementById('stockout-notes').value.trim(),
+    };
+    if (!payload.ingredient_id) { showToast('Pilih bahan terlebih dahulu.'); return; }
+    if (payload.quantity <= 0) { showToast('Jumlah harus lebih dari 0.'); return; }
+    try {
+        await apiFetch('/stock-out', { method: 'POST', body: JSON.stringify(payload) });
+        showToast('Stok keluar berhasil disimpan.');
+        document.getElementById('stockout-qty').value = '';
+        document.getElementById('stockout-notes').value = '';
+        await loadInventoryContext();
+        renderAll();
+    } catch (e) {
+        showToast(e.message || 'Gagal menyimpan stok keluar.');
+    }
+}
+
+async function saveAdjust() {
+    const payload = {
+        ingredient_id: document.getElementById('adjust-ingredient').value,
+        actual_stock: Number(document.getElementById('adjust-actual-stock').value) || 0,
+        reason: document.getElementById('adjust-reason').value.trim(),
+    };
+    if (!payload.ingredient_id) { showToast('Pilih bahan terlebih dahulu.'); return; }
+    try {
+        await apiFetch('/stock-adjustments', { method: 'POST', body: JSON.stringify(payload) });
+        showToast('Penyesuaian stok berhasil disimpan.');
+        document.getElementById('adjust-reason').value = '';
+        await loadInventoryContext();
+        renderAll();
+    } catch (e) {
+        showToast(e.message || 'Gagal menyimpan penyesuaian.');
+    }
+}
+
+function setupInventory() {
+    document.querySelectorAll('#inv-tabs .cat-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('#inv-tabs .cat-tab').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            setInvTab(btn.dataset.invtab);
+            if (btn.dataset.invtab === 'report') renderInventoryReport();
+            if (btn.dataset.invtab === 'low') renderLowStock();
+        });
+    });
+
+    const listed = document.getElementById('bahan-search');
+    if (listed) listed.addEventListener('input', renderBahanTable);
+    const bFilter = document.getElementById('bahan-filter-status');
+    if (bFilter) bFilter.addEventListener('change', renderBahanTable);
+    const supSearch = document.getElementById('supplier-search');
+    if (supSearch) supSearch.addEventListener('input', renderSuppliersTable);
+
+    document.getElementById('btn-add-bahan')?.addEventListener('click', () => openBahanModal());
+    document.getElementById('btn-add-supplier')?.addEventListener('click', () => openSupplierModal());
+    document.getElementById('btn-stockin-save')?.addEventListener('click', saveStockIn);
+    document.getElementById('btn-stockout-save')?.addEventListener('click', saveStockOut);
+    document.getElementById('btn-adjust-save')?.addEventListener('click', saveAdjust);
+
+    document.getElementById('stockout-ingredient')?.addEventListener('change', updateStockOutHint);
+    document.getElementById('adjust-ingredient')?.addEventListener('change', updateAdjustStock);
+    document.getElementById('adjust-actual-stock')?.addEventListener('input', updateAdjustDiff);
+
+    document.querySelectorAll('[data-invperiod]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('[data-invperiod]').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            APP.invPeriod = btn.dataset.invperiod;
+            APP.invReportLoaded = false;
+            renderInventoryReport();
+        });
+    });
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const fromEl = document.getElementById('inv-report-from');
+    const toEl = document.getElementById('inv-report-to');
+    if (fromEl) {
+        if (!fromEl.value) fromEl.value = todayIso;
+        fromEl.addEventListener('change', () => { if (APP.invPeriod === 'custom') { APP.invReportLoaded = false; renderInventoryReport(); } });
+    }
+    if (toEl) {
+        if (!toEl.value) toEl.value = todayIso;
+        toEl.addEventListener('change', () => { if (APP.invPeriod === 'custom') { APP.invReportLoaded = false; renderInventoryReport(); } });
+    }
+}
+
+/* ============================ BAHAN (Ingredients) ============================ */
+function openBahanModal(id) {
+    const existing = id ? APP.ingredients.find(i => i.id === id) : null;
+    document.getElementById('bahan-modal-title').textContent = existing ? 'Edit Bahan' : 'Tambah Bahan';
+    document.getElementById('bahan-id').value = existing ? existing.id : '';
+    document.getElementById('bahan-nama').value = existing ? existing.name : '';
+    document.getElementById('bahan-unit').value = existing ? existing.unit : 'gram';
+    document.getElementById('bahan-stok').value = existing ? existing.current_stock : 0;
+    document.getElementById('bahan-minimum').value = existing ? existing.minimum_stock : 0;
+    document.getElementById('bahan-harga').value = existing ? existing.cost_per_unit : 0;
+    document.getElementById('bahan-deskripsi').value = existing ? (existing.description || '') : '';
+    openModal('modal-bahan');
+}
+function editBahan(id) { openBahanModal(id); }
+
+async function toggleBahan(id) {
+    const i = APP.ingredients.find(i => i.id === id);
+    if (!i) return;
+    try {
+        await apiFetch(`/ingredients/${id}`, { method: 'PUT', body: JSON.stringify({ is_active: !i.is_active }) });
+    } catch (e) {}
+    await loadInventoryContext();
+    renderAll();
+    showToast(`Bahan ${i.is_active ? 'dinonaktifkan' : 'diaktifkan'}.`);
+}
+
+async function deleteBahan(id) {
+    if (!confirm('Hapus bahan ini?')) return;
+    try {
+        await apiFetch(`/ingredients/${id}`, { method: 'DELETE' });
+        showToast('Bahan berhasil dihapus.');
+    } catch (e) {
+        showToast(e.message || 'Gagal menghapus bahan.');
+    }
+    await loadInventoryContext();
+    renderAll();
+}
+
+async function saveBahan() {
+    const id = document.getElementById('bahan-id').value;
+    const name = document.getElementById('bahan-nama').value.trim();
+    const unit = document.getElementById('bahan-unit').value;
+    if (!name) { showToast('Nama bahan wajib diisi.'); return; }
+    const payload = {
+        name,
+        unit,
+        current_stock: Number(document.getElementById('bahan-stok').value) || 0,
+        minimum_stock: Number(document.getElementById('bahan-minimum').value) || 0,
+        cost_per_unit: Number(document.getElementById('bahan-harga').value) || 0,
+        description: document.getElementById('bahan-deskripsi').value.trim(),
+    };
+    try {
+        if (id) {
+            await apiFetch(`/ingredients/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+            showToast('Bahan berhasil diperbarui.');
+        } else {
+            await apiFetch('/ingredients', { method: 'POST', body: JSON.stringify(payload) });
+            showToast('Bahan berhasil ditambahkan.');
+        }
+    } catch (e) {
+        showToast(e.message || 'Gagal menyimpan bahan.');
+        return;
+    }
+    closeModal('modal-bahan');
+    await loadInventoryContext();
+    renderAll();
+}
+
+/* ============================ SUPPLIER ============================ */
+function openSupplierModal(id) {
+    const existing = id ? APP.suppliers.find(s => s.id === id) : null;
+    document.getElementById('supplier-modal-title').textContent = existing ? 'Edit Supplier' : 'Tambah Supplier';
+    document.getElementById('supplier-id').value = existing ? existing.id : '';
+    document.getElementById('supplier-nama').value = existing ? existing.name : '';
+    document.getElementById('supplier-telepon').value = existing ? (existing.phone || '') : '';
+    document.getElementById('supplier-email').value = existing ? (existing.email || '') : '';
+    document.getElementById('supplier-alamat').value = existing ? (existing.address || '') : '';
+    document.getElementById('supplier-catatan').value = existing ? (existing.notes || '') : '';
+    document.getElementById('supplier-status').value = existing ? (existing.is_active ? '1' : '0') : '1';
+    openModal('modal-supplier');
+}
+function editSupplier(id) { openSupplierModal(id); }
+
+async function deleteSupplier(id) {
+    if (!confirm('Hapus supplier ini?')) return;
+    try {
+        await apiFetch(`/suppliers/${id}`, { method: 'DELETE' });
+        showToast('Supplier berhasil dihapus.');
+    } catch (e) {
+        showToast(e.message || 'Gagal menghapus supplier.');
+    }
+    await loadInventoryContext();
+    renderAll();
+}
+
+async function saveSupplier() {
+    const id = document.getElementById('supplier-id').value;
+    const name = document.getElementById('supplier-nama').value.trim();
+    if (!name) { showToast('Nama supplier wajib diisi.'); return; }
+    const payload = {
+        name,
+        phone: document.getElementById('supplier-telepon').value.trim(),
+        email: document.getElementById('supplier-email').value.trim(),
+        address: document.getElementById('supplier-alamat').value.trim(),
+        notes: document.getElementById('supplier-catatan').value.trim(),
+        is_active: document.getElementById('supplier-status').value === '1',
+    };
+    try {
+        if (id) {
+            await apiFetch(`/suppliers/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+            showToast('Supplier berhasil diperbarui.');
+        } else {
+            await apiFetch('/suppliers', { method: 'POST', body: JSON.stringify(payload) });
+            showToast('Supplier berhasil ditambahkan.');
+        }
+    } catch (e) {
+        showToast(e.message || 'Gagal menyimpan supplier.');
+        return;
+    }
+    closeModal('modal-supplier');
+    await loadInventoryContext();
+    renderAll();
+}
+
+/* ============================ RESEP ============================ */
+function setupResep() {
+    document.getElementById('resep-search')?.addEventListener('input', renderResepTable);
+    document.getElementById('resep-filter')?.addEventListener('change', renderResepTable);
+    document.getElementById('btn-add-resep')?.addEventListener('click', () => openResep(null));
+    document.getElementById('btn-resep-add-row')?.addEventListener('click', addResepRow);
+}
+
+function renderResepTable() {
+    const search = (document.getElementById('resep-search')?.value || '').toLowerCase();
+    const filter = document.getElementById('resep-filter')?.value || 'all';
+    let list = APP.recipeData.filter(p => p.name.toLowerCase().includes(search));
+    if (filter === 'has') list = list.filter(p => p.has_recipe);
+    if (filter === 'none') list = list.filter(p => !p.has_recipe);
+
+    const wrap = document.getElementById('resep-table');
+    if (!wrap) return;
+    wrap.innerHTML = list.map(p => {
+        const s = stockStatus(p.menu_stock);
+        const margin = Number(p.margin) || 0;
+        return `<tr>
+            <td><div class="cell-flex"><span class="prod-thumb">${p.image || '&#9749;'}</span><span style="font-weight:700;">${p.name}</span></div></td>
+            <td class="muted">${catName(p.category_id)}</td>
+            <td><span class="badge ${p.has_recipe ? 'badge-green' : 'badge-red'}">${p.has_recipe ? 'Ada' : 'Belum'}</span></td>
+            <td>${p.ingredient_count}</td>
+            <td>${rupiah(p.recipe_cost)}</td>
+            <td>${rupiah(p.price)}</td>
+            <td style="color:var(--green);font-weight:700;">${rupiah(p.profit)}</td>
+            <td>${margin.toFixed(2)}%</td>
+            <td>${fmtQty(p.menu_stock)}</td>
+            <td><span class="badge ${s.cls}">${s.label}</span></td>
+            <td style="white-space:nowrap;">
+                <button class="icon-btn" onclick="openResep(${p.id})">${p.has_recipe ? 'Atur Resep' : 'Buat Resep'}</button>
+                ${p.has_recipe ? `<button class="icon-btn danger" onclick="deleteResep(${p.id})">Hapus</button>` : ''}
+            </td>
+        </tr>`;
+    }).join('') || `<tr><td colspan="11"><div class="empty-state"><div class="em-ic">&#127860;</div>Belum ada menu.</div></td></tr>`;
+}
+
+function activeIngredientOptions(selectedId) {
+    return APP.ingredients.filter(i => i.is_active).map(i =>
+        `<option value="${i.id}" ${i.id == selectedId ? 'selected' : ''}>${i.name}</option>`
+    ).join('');
+}
+
+function openResep(productId) {
+    const product = productId ? APP.recipeData.find(p => p.id === productId) : null;
+    const sel = document.getElementById('resep-product-select');
+    document.getElementById('resep-modal-title').textContent = product
+        ? (product.has_recipe ? 'Atur Resep' : 'Buat Resep')
+        : 'Tambah Resep';
+    document.getElementById('resep-notes').value = product ? (product.recipe_notes || '') : '';
+    document.getElementById('resep-product-id').value = product ? product.id : '';
+
+    sel.innerHTML = `<option value="">— Pilih Menu —</option>` + APP.products.map(p => `<option value="${p.id}">${p.name}</option>`);
+    sel.disabled = !!productId;
+    if (product) {
+        sel.value = product.id;
+        document.getElementById('resep-harga-jual').value = product.price;
+        APP.resepRows = (product.recipe_ingredients || []).map(ri => ({
+            ingredient_id: ri.ingredient_id,
+            quantity: ri.quantity,
+            unit: ri.unit || (APP.ingredients.find(i => i.id == ri.ingredient_id)?.unit || ''),
+        }));
+    } else {
+        document.getElementById('resep-harga-jual').value = '';
+        APP.resepRows = [{ ingredient_id: APP.ingredients.find(i => i.is_active)?.id || '', quantity: '', unit: '' }];
+    }
+    sel.onchange = () => {
+        const p = APP.products.find(pp => pp.id == sel.value);
+        document.getElementById('resep-product-id').value = sel.value;
+        document.getElementById('resep-harga-jual').value = p ? p.price : '';
+        updateResepSummary();
+    };
+    renderResepRows();
+    updateResepSummary();
+    openModal('modal-resep');
+}
+
+function renderResepRows() {
+    const wrap = document.getElementById('resep-ingredient-rows');
+    if (!APP.resepRows.length) {
+        APP.resepRows = [{ ingredient_id: APP.ingredients.find(i => i.is_active)?.id || '', quantity: '', unit: '' }];
+    }
+    wrap.innerHTML = APP.resepRows.map((row, idx) => `
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+            <select class="input" style="flex:2;padding:7px 10px;" data-row="${idx}" data-field="ingredient_id">${activeIngredientOptions(row.ingredient_id)}</select>
+            <input class="input" type="number" min="0" step="any" style="flex:1;padding:7px 10px;" value="${row.quantity}" data-row="${idx}" data-field="quantity" placeholder="Jumlah">
+            <input class="input" style="flex:1;padding:7px 10px;" value="${row.unit || ''}" data-row="${idx}" data-field="unit" placeholder="unit">
+            <button class="icon-btn danger" onclick="removeResepRow(${idx})" style="margin:0;">Hapus</button>
+        </div>
+    `).join('');
+    wrap.querySelectorAll('input,select').forEach(el => {
+        el.addEventListener('change', () => {
+            const row = Number(el.dataset.row);
+            const field = el.dataset.field;
+            APP.resepRows[row][field] = el.value;
+            if (field === 'ingredient_id') {
+                const ing = APP.ingredients.find(i => i.id == el.value);
+                if (ing && !APP.resepRows[row].unit) APP.resepRows[row].unit = ing.unit;
+                renderResepRows();
+            }
+            updateResepSummary();
+        });
+        el.addEventListener('input', () => {
+            const row = Number(el.dataset.row);
+            const field = el.dataset.field;
+            APP.resepRows[row][field] = el.value;
+            updateResepSummary();
+        });
+    });
+}
+
+function addResepRow() {
+    APP.resepRows.push({ ingredient_id: '', quantity: '', unit: '' });
+    renderResepRows();
+    updateResepSummary();
+}
+function removeResepRow(idx) {
+    APP.resepRows.splice(idx, 1);
+    renderResepRows();
+    updateResepSummary();
+}
+
+function updateResepSummary() {
+    const price = Number(document.getElementById('resep-harga-jual').value) || 0;
+    let cost = 0;
+    APP.resepRows.forEach(row => {
+        const ing = APP.ingredients.find(i => i.id == row.ingredient_id);
+        if (ing) cost += (Number(row.quantity) || 0) * (Number(ing.cost_per_unit) || 0);
+    });
+    document.getElementById('resep-sum-cost').textContent = rupiah(cost);
+    document.getElementById('resep-sum-price').textContent = rupiah(price);
+    document.getElementById('resep-sum-profit').textContent = rupiah(price - cost);
+    document.getElementById('resep-sum-margin').textContent = price > 0 ? ((price - cost) / price * 100).toFixed(2) + '%' : '0%';
+}
+
+async function saveResep() {
+    const productId = document.getElementById('resep-product-id').value;
+    const selectedProductId = document.getElementById('resep-product-select').value;
+    const ingredients = APP.resepRows
+        .filter(r => r.ingredient_id && Number(r.quantity) > 0)
+        .map(r => ({ ingredient_id: Number(r.ingredient_id), quantity: Number(r.quantity), unit: r.unit || null }));
+    if (!ingredients.length) { showToast('Minimal satu bahan dengan jumlah > 0.'); return; }
+    const notes = document.getElementById('resep-notes').value.trim();
+    try {
+        await apiFetch('/recipes', {
+            method: 'POST',
+            body: JSON.stringify({ product_id: Number(productId) || Number(selectedProductId), notes: notes || null, ingredients }),
+        });
+        showToast('Resep berhasil disimpan.');
+        closeModal('modal-resep');
+        await loadInventoryContext();
+        renderAll();
+    } catch (e) {
+        showToast(e.message || 'Gagal menyimpan resep.');
+    }
+}
+
+async function deleteResep(productId) {
+    const p = APP.recipeData.find(p => p.id === productId);
+    if (!p || !p.recipe_id) return;
+    if (!confirm('Hapus resep ' + p.name + '?')) return;
+    try {
+        await apiFetch(`/recipes/${p.recipe_id}`, { method: 'DELETE' });
+        showToast('Resep berhasil dihapus.');
+    } catch (e) {
+        showToast(e.message || 'Gagal menghapus resep.');
+    }
+    await loadInventoryContext();
+    renderAll();
+}
+
 /* ============================ RENDER ALL ============================ */
 function renderAll() {
     renderDashboard();
@@ -839,6 +1719,19 @@ function renderAll() {
     renderStok();
     renderTransaksi();
     renderLaporan();
+    renderUsers();
+    if (APP.user.role === 'admin') {
+        renderInventoryStats();
+        renderBahanTable();
+        renderSuppliersTable();
+        renderResepTable();
+        if (APP.invTab === 'in') renderStockIn();
+        if (APP.invTab === 'out') renderStockOut();
+        if (APP.invTab === 'adjust') renderAdjust();
+        if (APP.invTab === 'low') renderLowStock();
+        if (APP.invTab === 'report') renderInventoryReport();
+    }
+    setInvTab(APP.invTab);
 }
 
 /* ============================ EXPOSE GLOBALS ============================ */
@@ -860,5 +1753,20 @@ Object.assign(window, {
     saveKategori,
     openStokModal,
     saveStokAdjust,
+    editUser,
+    saveUser,
+    deleteUser,
+    editBahan,
+    toggleBahan,
+    deleteBahan,
+    saveBahan,
+    editSupplier,
+    deleteSupplier,
+    saveSupplier,
+    openResep,
+    deleteResep,
+    saveResep,
+    addResepRow,
+    removeResepRow,
 });
 

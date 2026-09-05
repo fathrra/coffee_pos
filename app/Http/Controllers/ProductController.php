@@ -10,7 +10,9 @@ class ProductController extends Controller
 {
     public function index()
     {
-        return response()->json(Product::with('category')->get());
+        return response()->json(
+            Product::with(['category', 'recipe.recipeIngredients.ingredient'])->paginate(100)
+        );
     }
 
     public function store(Request $request)

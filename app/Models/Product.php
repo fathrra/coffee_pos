@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\InventoryService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
@@ -28,6 +29,31 @@ class Product extends Model
     public function category()
     {
         return $this->belongsTo(Category::class);
+    }
+
+    public function recipe()
+    {
+        return $this->hasOne(Recipe::class);
+    }
+
+    /**
+     * Menu stock is computed from the recipe ingredients whenever a recipe
+     * exists. Falls back to the manually stored stock column otherwise.
+     */
+    public function getStockAttribute($value): float|int
+    {
+        $recipe = $this->getRelationValue('recipe');
+
+        if ($recipe && $recipe->recipeIngredients->isNotEmpty()) {
+            return app(InventoryService::class)->calculateMenuStock($this);
+        }
+
+        return (float) $value;
+    }
+
+    public function hasActiveRecipe(): bool
+    {
+        return $this->relationLoaded('recipe') && $this->recipe && $this->recipe->recipeIngredients->isNotEmpty();
     }
 
     public function transactionDetails()

@@ -5,6 +5,9 @@ namespace App\Http\Controllers;
 use App\Models\Transaction;
 use App\Models\TransactionDetail;
 use App\Models\Product;
+use App\Models\StockMovement;
+use App\Services\InventoryService;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -14,14 +17,15 @@ class TransactionController extends Controller
     {
         $transactions = Transaction::with(['user', 'details.product'])
             ->orderByDesc('created_at')
-            ->get()
-            ->map(function ($t) {
-                $t->cashier = $t->user ? $t->user->name : '-';
-                $t->details->each(function ($d) {
-                    $d->name = $d->product ? $d->product->name : '-';
-                });
-                return $t;
+            ->paginate(50);
+
+        $transactions->getCollection()->transform(function ($t) {
+            $t->cashier = $t->user ? $t->user->name : '-';
+            $t->details->each(function ($d) {
+                $d->name = $d->product ? $d->product->name : '-';
             });
+            return $t;
+        });
 
         return response()->json($transactions);
     }
@@ -44,6 +48,14 @@ class TransactionController extends Controller
         ]);
 
         return DB::transaction(function () use ($validated, $request) {
+            $inventory = app(InventoryService::class);
+
+            // Validate ingredient availability before creating the transaction.
+            $ingredientRequirements = $inventory->requiredIngredients(
+                collect($validated['details']),
+            );
+            $inventory->assertStockAvailable($ingredientRequirements);
+
             $transaction = Transaction::create([
                 'invoice_number' => $validated['invoice_number'],
                 'customer_name' => $validated['customer_name'] ?? null,
@@ -56,6 +68,11 @@ class TransactionController extends Controller
                 'change_amount' => $validated['change_amount'],
             ]);
 
+            $products = Product::with('recipe.recipeIngredients.ingredient')
+                ->whereIn('id', collect($validated['details'])->pluck('product_id'))
+                ->get()
+                ->keyBy('id');
+
             foreach ($validated['details'] as $detail) {
                 TransactionDetail::create([
                     'transaction_id' => $transaction->id,
@@ -65,10 +82,52 @@ class TransactionController extends Controller
                     'subtotal' => $detail['price'] * $detail['quantity'],
                 ]);
 
+                $product = $products->get((int) $detail['product_id']);
+
+                if ($product && $product->hasActiveRecipe()) {
+                    // Menu stock is computed from ingredients, so there is
+                    // nothing to decrement on the products table.
+                    continue;
+                }
+
                 Product::where('id', $detail['product_id'])->decrement('stock', $detail['quantity']);
+
+                StockMovement::create([
+                    'product_id' => $detail['product_id'],
+                    'user_id' => $request->user()->id,
+                    'type' => 'out',
+                    'quantity' => $detail['quantity'],
+                    'description' => 'Penjualan via ' . $validated['invoice_number'],
+                ]);
             }
+
+            // Deduct ingredient stock for every menu that has a recipe.
+            $inventory->deductIngredientsForSale(
+                collect($validated['details']),
+                $request->user(),
+                $transaction->id,
+                $validated['invoice_number'],
+            );
 
             return response()->json($transaction->load(['user', 'details.product']), 201);
         });
+    }
+
+    public function receipt(Transaction $transaction)
+    {
+        $transaction->load(['user', 'details.product']);
+
+        $pdf = Pdf::loadView('pdf.receipt', [
+            'transaction' => $transaction,
+            'cashier' => $transaction->user ? $transaction->user->name : '-',
+            'details' => $transaction->details->map(function ($d) {
+                $d->product_name = $d->product ? $d->product->name : '-';
+                return $d;
+            }),
+        ]);
+
+        $pdf->setPaper([0, 0, 80, 295], 'portrait');
+
+        return $pdf->download('struk-' . $transaction->invoice_number . '.pdf');
     }
 }
