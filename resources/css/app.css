@@ -441,15 +441,15 @@ tr:last-child td { border-bottom: none; }
 .login-screen {
     min-height: 100vh; display: flex; align-items: center;
     justify-content: center; padding: 24px;
-    background: var(--ink);
+    background: var(--brown);
     position: relative; overflow: hidden;
 }
 .login-screen::before {
     content: ''; position: absolute; top: -50%; left: -50%;
     width: 200%; height: 200%;
     background:
-        radial-gradient(circle at 20% 30%, rgba(181,100,44,0.4), transparent 40%),
-        radial-gradient(circle at 80% 70%, rgba(181,100,44,0.3), transparent 40%);
+        radial-gradient(circle at 20% 30%, rgba(255,246,192,0.28), transparent 45%),
+        radial-gradient(circle at 80% 70%, rgba(9,8,14,0.28), transparent 45%);
 }
 .login-card {
     width: 100%; max-width: 380px;
@@ -461,9 +461,14 @@ tr:last-child td { border-bottom: none; }
 .login-brand {
     font-family: 'Outfit', sans-serif; font-size: 22px;
     font-weight: 800; font-style: italic;
-    text-align: center; line-height: 1.15; color: var(--ink);
+    text-align: center; color: var(--ink);
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
 }
-.login-brand br { display: none; }
+.login-logo {
+    width: 56px; height: 56px; border-radius: 50%;
+    border: 3px solid var(--ink); background: var(--cream);
+    box-shadow: var(--shadow-brutal); object-fit: cover;
+}
 .login-sub {
     text-align: center; color: var(--brown);
     font-size: 13px; margin: 6px 0 24px 0; font-weight: 700;
@@ -493,7 +498,7 @@ tr:last-child td { border-bottom: none; }
 @media (max-width: 680px) {
     .sidebar {
         width: 100%; height: auto; position: fixed;
-        bottom: 0; left: 0; right: 0;
+        top: auto; bottom: 0; left: 0; right: 0;
         flex-direction: row; padding: 8px 12px;
         align-items: center; justify-content: space-around;
         border-right: none; border-top: 3px solid var(--ink);

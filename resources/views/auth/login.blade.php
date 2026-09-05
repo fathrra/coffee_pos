@@ -13,7 +13,10 @@
 
 <div class="login-screen">
     <div class="login-card">
-        <div class="login-brand">&#9749;<br>Kopi Nusantara POS</div>
+        <div class="login-brand">
+            <img class="login-logo" src="{{ asset('logo.png') }}" alt="Logo">
+            <span>Kopi Nusantara POS</span>
+        </div>
         <div class="login-sub">Masuk untuk mengakses sistem kasir</div>
 
         @if ($errors->any())
