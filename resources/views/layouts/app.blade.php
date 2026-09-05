@@ -21,7 +21,7 @@
 
         <aside class="sidebar">
             <div class="brand-icon">
-                <img src="{{ asset('logo.png') }}" alt="Logo" style="width:100%;height:100%;object-fit:contain;border-radius:50%;">
+                <img src="{{ asset('logo.png') }}" alt="Logo" style="width:70%;height:100%;object-fit:contain;border-radius:50%;">
             </div>
             <nav id="nav">
                 <button class="navbtn {{ ($activePage ?? 'dashboard') === 'dashboard' ? 'active' : '' }}" data-page="dashboard" title="Dashboard">
