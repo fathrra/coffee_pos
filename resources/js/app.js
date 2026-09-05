@@ -27,6 +27,9 @@ const APP = {
     recipeReport: null,
     invReportLoaded: false,
     lowStockLoaded: false,
+    settings: {},
+    pick: null,
+    nextCartUid: 1,
 };
 
 /* ============================ INIT ============================ */
@@ -45,6 +48,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadProducts();
     loadTransactions();
     loadUsers();
+    loadSettings();
     seedHistory();
     loadInventoryContext();
 
@@ -103,6 +107,7 @@ async function loadTransactions() {
         const data = await apiFetch('/transactions');
         APP.transactions = (data.data || data).map(t => ({
             ...t,
+            _server: true,
             subtotal: Number(t.subtotal) || 0,
             discount: Number(t.discount) || 0,
             tax: Number(t.tax) || 0,
@@ -130,6 +135,47 @@ async function loadUsers() {
         APP.users = data.data || data;
     } catch (e) {
         APP.users = [];
+    }
+}
+
+/* ============================ SETTINGS (PENGATURAN) ============================ */
+async function loadSettings() {
+    try {
+        const data = await apiFetch('/settings');
+        APP.settings = { ...APP.settings, ...data };
+        applySettings();
+    } catch (e) {}
+}
+
+function applySettings() {
+    const taxEl = document.getElementById('input-tax');
+    if (taxEl && APP.settings.default_tax != null && taxEl.value === '') {
+        taxEl.value = APP.settings.default_tax;
+    }
+    const storeNameEl = document.getElementById('set-store-name');
+    if (storeNameEl) storeNameEl.value = APP.settings.store_name || '';
+    const addrEl = document.getElementById('set-store-address');
+    if (addrEl) addrEl.value = APP.settings.store_address || '';
+    const footerEl = document.getElementById('set-receipt-footer');
+    if (footerEl) footerEl.value = APP.settings.receipt_footer || '';
+    const defTaxEl = document.getElementById('set-default-tax');
+    if (defTaxEl) defTaxEl.value = APP.settings.default_tax != null ? APP.settings.default_tax : 0;
+}
+
+async function savePengaturan() {
+    const payload = {
+        store_name: document.getElementById('set-store-name').value.trim(),
+        store_address: document.getElementById('set-store-address').value.trim(),
+        receipt_footer: document.getElementById('set-receipt-footer').value.trim(),
+        default_tax: Number(document.getElementById('set-default-tax').value) || 0,
+    };
+    if (!payload.store_name) { showToast('Nama toko wajib diisi.'); return; }
+    try {
+        const data = await apiFetch('/settings', { method: 'POST', body: JSON.stringify(payload) });
+        APP.settings = { ...APP.settings, ...(data || payload) };
+        showToast('Pengaturan berhasil disimpan.');
+    } catch (e) {
+        showToast(e.message || 'Gagal menyimpan pengaturan.');
     }
 }
 
@@ -263,6 +309,9 @@ function showToast(msg) {
     t.classList.add('show');
     clearTimeout(window._toastTimer);
     window._toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+function esc(s) {
+    return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
 function openModal(id) { document.getElementById(id).classList.add('open'); }
@@ -422,9 +471,10 @@ function renderPosProducts() {
     if (search) list = list.filter(p => p.name.toLowerCase().includes(search));
     document.getElementById('pos-products').innerHTML = list.map(p => {
         const disabled = p.stock <= 0;
-        return `<div class="prod-card ${disabled ? 'disabled' : ''}" ${disabled ? '' : `onclick="addToCart(${p.id})"`}>
+        const hasOptions = (p.variants || []).some(v => v.is_active) || (p.addons || []).some(a => a.is_active);
+        return `<div class="prod-card ${disabled ? 'disabled' : ''}" ${disabled ? '' : `onclick="openProductPicker(${p.id})"`}>
             <div class="prod-icon">${p.image || '&#9749;'}</div>
-            <div class="prod-name">${p.name}</div>
+            <div class="prod-name">${p.name}${hasOptions ? ' <span class="badge badge-yellow" style="font-size:10px;vertical-align:middle;">opsi</span>' : ''}</div>
             <div class="prod-cat">${catName(p.category_id)}</div>
             <div class="prod-price">${rupiah(p.price)}</div>
             <div class="prod-stock" style="color:${disabled ? '#B14834' : '#7A6E60'}">${disabled ? 'Stok habis' : 'Stok: ' + p.stock}</div>
@@ -432,24 +482,157 @@ function renderPosProducts() {
     }).join('') || `<div class="empty-state" style="grid-column:1/-1;"><div class="em-ic">&#128269;</div>Produk tidak ditemukan.</div>`;
 }
 
-function addToCart(productId) {
+function addonKeyOf(addons) {
+    return (addons || []).map(a => a.id).sort((x, y) => x - y).join(',');
+}
+
+function lineName(p, variant, addons) {
+    let n = p.name;
+    if (variant) n += ' (' + variant.name + ')';
+    if (addons && addons.length) n += ' + ' + addons.map(a => a.name).join(' + ');
+    return n;
+}
+
+function lineMaxStock(p, multiplier) {
+    return Math.floor((Number(p.stock) || 0) / Math.max(multiplier || 1, 0.01));
+}
+
+function openProductPicker(productId) {
     const p = APP.products.find(p => p.id === productId);
-    const existing = APP.cart.find(c => c.productId === productId);
+    if (!p || p.stock <= 0) return;
+    const variants = (p.variants || []).filter(v => v.is_active);
+    const addons = (p.addons || []).filter(a => a.is_active);
+
+    if (!variants.length && !addons.length) {
+        addToCart(productId, null, []);
+        return;
+    }
+
+    APP.pick = { productId, variantId: variants.length ? variants[0].id : null, addons: [] };
+
+    let html = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+        <span class="prod-thumb" style="width:44px;height:44px;display:flex;align-items:center;justify-content:center;">${p.image || '&#9749;'}</span>
+        <div><div style="font-weight:800;font-size:15px;">${p.name}</div>
+        <div class="muted" style="font-size:12px;">Harga dasar: ${rupiah(p.price)}</div></div>
+    </div>`;
+
+    if (variants.length) {
+        html += `<div class="field"><label>Ukuran / Varian</label>` + variants.map(v => `
+            <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer;">
+                <span style="display:flex;gap:8px;align-items:center;">
+                    <input type="radio" name="pick-variant" value="${v.id}" data-vprice="${v.price}" ${v.id === APP.pick.variantId ? 'checked' : ''}>
+                    ${esc(v.name)}
+                </span>
+                <span class="muted">${Number(v.price) > 0 ? '+' + rupiah(v.price) : 'Rp0'}</span>
+            </label>`).join('') + `</div>`;
+    }
+
+    if (addons.length) {
+        html += `<div class="field"><label>Tambahan</label>` + addons.map(a => `
+            <label style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer;">
+                <span style="display:flex;gap:8px;align-items:center;">
+                    <input type="checkbox" name="pick-addon" value="${a.id}" data-aname="${esc(a.name)}">
+                    ${esc(a.name)}
+                </span>
+                <span class="muted">+${rupiah(a.price)}</span>
+            </label>`).join('') + `</div>`;
+    }
+
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:10px;border-top:1px dashed var(--line);">
+        <span class="muted">Harga per item</span><span id="pick-price" style="font-weight:800;font-size:16px;"></span>
+    </div>`;
+
+    document.getElementById('pick-product-content').innerHTML = html;
+
+    document.querySelectorAll('#pick-product-content input[name="pick-variant"]').forEach(r => {
+        r.addEventListener('change', () => {
+            APP.pick.variantId = Number(r.value);
+            updatePickPrice();
+        });
+    });
+    document.querySelectorAll('#pick-product-content input[name="pick-addon"]').forEach(c => {
+        c.addEventListener('change', () => {
+            const id = Number(c.value);
+            const addon = addons.find(a => a.id === id);
+            if (c.checked) {
+                if (!APP.pick.addons.some(x => x.id === id)) {
+                    APP.pick.addons.push({ id, name: addon.name, price: Number(addon.price) });
+                }
+            } else {
+                APP.pick.addons = APP.pick.addons.filter(x => x.id !== id);
+            }
+            updatePickPrice();
+        });
+    });
+
+    updatePickPrice();
+    openModal('modal-pick-product');
+}
+
+function updatePickPrice() {
+    const p = APP.products.find(p => p.id === APP.pick.productId);
+    const selected = document.querySelector('#pick-product-content input[name="pick-variant"]:checked');
+    const vPrice = selected ? Number(selected.dataset.vprice) || 0 : 0;
+    const addonsPrice = APP.pick.addons.reduce((s, a) => s + a.price, 0);
+    const price = (Number(p.price) || 0) + vPrice + addonsPrice;
+    document.getElementById('pick-price').textContent = rupiah(price);
+}
+
+function confirmAddPick() {
+    if (!APP.pick) return;
+    addToCart(APP.pick.productId, APP.pick.variantId, APP.pick.addons);
+    APP.pick = null;
+    closeModal('modal-pick-product');
+}
+
+function addToCart(productId, variantId, addons) {
+    const p = APP.products.find(p => p.id === productId);
+    if (!p) return;
+    const variant = variantId ? (p.variants || []).find(v => v.id == variantId) : null;
+    const addonList = (addons || []).map(a => ({ id: Number(a.id), name: a.name, price: Number(a.price) }));
+    const price = (Number(p.price) || 0)
+        + (variant ? Number(variant.price) || 0 : 0)
+        + addonList.reduce((s, a) => s + a.price, 0);
+    const multiplier = variant ? (Number(variant.multiplier) || 1) : 1;
+    const maxStock = lineMaxStock(p, multiplier);
+
+    const key = addonKeyOf(addonList);
+    const existing = APP.cart.find(c =>
+        c.productId === productId &&
+        (c.variantId || null) === (variantId || null) &&
+        c.addonKey === key
+    );
     const inCart = existing ? existing.qty : 0;
-    if (inCart >= p.stock) { showToast('Stok tidak mencukupi.'); return; }
-    if (existing) existing.qty++;
-    else APP.cart.push({ productId, qty: 1 });
+    if (inCart >= maxStock) { showToast('Stok tidak mencukupi.'); return; }
+
+    if (existing) {
+        existing.qty++;
+    } else {
+        APP.cart.push({
+            uid: APP.nextCartUid++,
+            productId,
+            variantId: variantId || null,
+            variantName: variant ? variant.name : null,
+            variantMult: multiplier,
+            addons: addonList,
+            addonKey: key,
+            price,
+            qty: 1,
+            name: lineName(p, variant, addonList),
+        });
+    }
     renderCart();
     renderPosProducts();
 }
 
-function changeQty(productId, delta) {
-    const item = APP.cart.find(c => c.productId === productId);
+function changeQty(uid, delta) {
+    const item = APP.cart.find(c => c.uid === uid);
     if (!item) return;
-    const p = APP.products.find(p => p.id === productId);
+    const p = APP.products.find(p => p.id === item.productId);
+    const maxStock = lineMaxStock(p, item.variantMult);
     const newQty = item.qty + delta;
-    if (newQty <= 0) { APP.cart = APP.cart.filter(c => c.productId !== productId); }
-    else if (newQty > p.stock) { showToast('Stok tidak mencukupi.'); return; }
+    if (newQty <= 0) { APP.cart = APP.cart.filter(c => c.uid !== uid); }
+    else if (newQty > maxStock) { showToast('Stok tidak mencukupi.'); return; }
     else { item.qty = newQty; }
     renderCart();
 }
@@ -459,29 +642,24 @@ function renderCart() {
     if (APP.cart.length === 0) {
         wrap.innerHTML = `<div class="cart-empty">Keranjang masih kosong.<br>Pilih produk untuk memulai transaksi.</div>`;
     } else {
-        wrap.innerHTML = APP.cart.map(c => {
-            const p = APP.products.find(p => p.id === c.productId);
-            return `<div class="cart-item">
+        wrap.innerHTML = APP.cart.map(c => `
+            <div class="cart-item">
                 <div>
-                    <div class="ci-name">${p.name}</div>
-                    <div class="ci-price">${rupiah(p.price)}</div>
+                    <div class="ci-name">${esc(c.name)}</div>
+                    <div class="ci-price">${rupiah(c.price)}</div>
                 </div>
                 <div class="qty-ctrl">
-                    <button class="qty-btn" onclick="changeQty(${p.id},-1)">&minus;</button>
+                    <button class="qty-btn" onclick="changeQty(${c.uid},-1)">&minus;</button>
                     <span class="qty-num">${c.qty}</span>
-                    <button class="qty-btn" onclick="changeQty(${p.id},1)">+</button>
+                    <button class="qty-btn" onclick="changeQty(${c.uid},1)">+</button>
                 </div>
-            </div>`;
-        }).join('');
+            </div>`).join('');
     }
     updateCartSums();
 }
 
 function updateCartSums() {
-    const subtotal = APP.cart.reduce((s, c) => {
-        const p = APP.products.find(p => p.id === c.productId);
-        return s + p.price * c.qty;
-    }, 0);
+    const subtotal = APP.cart.reduce((s, c) => s + c.price * c.qty, 0);
     const discount = Number(document.getElementById('input-discount').value) || 0;
     const taxPct = Number(document.getElementById('input-tax').value) || 0;
     const tax = Math.max(subtotal - discount, 0) * (taxPct / 100);
@@ -507,20 +685,19 @@ async function processPayment() {
 
     const customerName = document.getElementById('input-customer-name').value.trim();
 
-    const details = APP.cart.map(c => {
-        const p = APP.products.find(p => p.id === c.productId);
-        return { product_id: p.id, name: p.name, price: p.price, quantity: c.qty, subtotal: p.price * c.qty };
-    });
-
-    const now = new Date();
-    const invoice = 'INV-' + now.toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(APP.transactions.length + 1).padStart(3, '0');
+    const details = APP.cart.map(c => ({
+        product_id: c.productId,
+        quantity: c.qty,
+        price: c.price,
+        variant_id: c.variantId,
+        addons: c.addons,
+    }));
 
     let data;
     try {
         data = await apiFetch('/transactions', {
             method: 'POST',
             body: JSON.stringify({
-                invoice_number: invoice,
                 customer_name: customerName || null,
                 subtotal: sums.subtotal,
                 discount: sums.discount,
@@ -528,24 +705,19 @@ async function processPayment() {
                 total: sums.total,
                 paid_amount: sums.cash,
                 change_amount: sums.change,
-                details: details.map(d => ({ product_id: d.product_id, quantity: d.quantity, price: d.price })),
+                details,
             }),
         });
 
         const tx = data.data || data;
+        const invoice = tx.invoice_number;
+
         APP.transactions.unshift({
             ...tx,
-            date: new Date(),
+            _server: true,
+            date: new Date(tx.created_at || new Date()),
             details,
-            invoice_number: invoice,
-            customer_name: customerName,
-            subtotal: sums.subtotal,
-            discount: sums.discount,
-            tax: sums.tax,
-            total: sums.total,
-            paid_amount: sums.cash,
-            change_amount: sums.change,
-            cashier: APP.user.name,
+            cashier: tx.cashier || APP.user.name,
         });
 
         // Refresh stock (menu stock is computed from recipes on the server)
@@ -555,22 +727,20 @@ async function processPayment() {
         return;
     }
 
-    // Store last transaction ID for PDF receipt
     APP.lastTransactionId = data && data.id ? data.id : null;
-
-    // Show receipt
     const receiptId = (data && data.id) ? data.id : null;
     const baseUrl = window.__base_url || window.location.origin;
+    const storeName = APP.settings.store_name || 'CoffeePOS';
 
     document.getElementById('struk-content').innerHTML = `
         <div style="text-align:center;margin-bottom:14px;">
-            <div style="font-size:22px;">&#9749; CoffeePOS</div>
+            <div style="font-size:22px;">&#9749; ${esc(storeName)}</div>
             <div class="muted" style="font-size:12px;">${invoice}</div>
-            <div class="muted" style="font-size:12px;">${fmtDateShort(now)}</div>
-            ${customerName ? `<div style="font-size:13px;margin-top:6px;font-weight:700;">Atas Nama: ${customerName}</div>` : ''}
+            <div class="muted" style="font-size:12px;">${fmtDateShort(new Date())}</div>
+            ${customerName ? `<div style="font-size:13px;margin-top:6px;font-weight:700;">Atas Nama: ${esc(customerName)}</div>` : ''}
         </div>
         <div style="border-top:1px dashed var(--line);border-bottom:1px dashed var(--line);padding:10px 0;margin-bottom:10px;">
-            ${details.map(d => `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px;font-family:'Outfit',sans-serif;font-style:italic;"><span>${d.name} &times;${d.quantity}</span><span>${rupiah(d.subtotal)}</span></div>`).join('')}
+            ${details.map(d => `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px;font-family:'Outfit',sans-serif;font-style:italic;"><span>${esc(lineName(APP.products.find(p => p.id === d.product_id), APP.products.find(p => p.id === d.product_id)?.variants?.find(v => v.id == d.variant_id) || null, d.addons))} &times;${d.quantity}</span><span>${rupiah(d.price * d.quantity)}</span></div>`).join('')}
         </div>
         <div style="font-family:'Outfit',sans-serif;font-size:13px;font-style:italic;">
             <div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span>Subtotal</span><span>${rupiah(sums.subtotal)}</span></div>
@@ -633,6 +803,7 @@ function renderProdukTable() {
             <td><span class="badge ${p.is_active ? 'badge-green' : 'badge-red'}">${p.is_active ? 'Aktif' : 'Nonaktif'}</span></td>
             <td style="white-space:nowrap;">
                 <button class="icon-btn" onclick="editProduk(${p.id})">Edit</button>
+                ${APP.user.role === 'admin' ? `<button class="icon-btn" onclick="openVarianModal(${p.id})">Varian &amp; Add-on</button>` : ''}
                 <button class="icon-btn" onclick="toggleProdukStatus(${p.id})">${p.is_active ? 'Nonaktifkan' : 'Aktifkan'}</button>
                 <button class="icon-btn danger" onclick="deleteProduk(${p.id})">Hapus</button>
             </td>
@@ -717,6 +888,120 @@ async function deleteProduk(id) {
     APP.products = APP.products.filter(p => p.id !== id);
     renderAll();
     showToast('Produk dihapus.');
+}
+
+/* ============================ VARIAN & ADD-ON ============================ */
+const VARIAN = { productId: null, variants: [], addons: [] };
+
+function openVarianModal(productId) {
+    const p = APP.products.find(p => p.id === productId);
+    if (!p) return;
+    VARIAN.productId = productId;
+    VARIAN.variants = (p.variants || []).map(v => ({
+        name: v.name, price: Number(v.price) || 0, multiplier: Number(v.multiplier) || 1, is_active: !!v.is_active,
+    }));
+    VARIAN.addons = (p.addons || []).map(a => ({
+        name: a.name, price: Number(a.price) || 0,
+        ingredient_id: a.ingredient_id ? String(a.ingredient_id) : '',
+        ingredient_quantity: a.ingredient_quantity != null ? a.ingredient_quantity : '',
+        is_active: !!a.is_active,
+    }));
+    document.getElementById('varian-product-name').textContent = p.name;
+    renderVarianRows();
+    renderAddonRows();
+    openModal('modal-varian');
+}
+
+function addVarianRow() { VARIAN.variants.push({ name: '', price: 0, multiplier: 1, is_active: true }); renderVarianRows(); }
+function removeVarianRow(idx) { VARIAN.variants.splice(idx, 1); renderVarianRows(); }
+
+function renderVarianRows() {
+    const wrap = document.getElementById('varian-rows');
+    wrap.innerHTML = VARIAN.variants.map((v, i) => `
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+            <input class="input" style="flex:2;padding:7px 10px;" value="${esc(v.name)}" data-varian-i="${i}" data-varian-f="name" placeholder="Nama (cth: Large)">
+            <input class="input" type="number" min="0" step="any" style="flex:1.2;padding:7px 10px;" value="${v.price}" data-varian-i="${i}" data-varian-f="price" placeholder="Tambahan (Rp)">
+            <input class="input" type="number" min="0" step="any" style="flex:1;padding:7px 10px;" value="${v.multiplier}" data-varian-i="${i}" data-varian-f="multiplier" placeholder="Multiplier">
+            <label class="muted" style="font-size:12px;white-space:nowrap;"><input type="checkbox" ${v.is_active ? 'checked' : ''} data-varian-i="${i}" data-varian-f="is_active"> Aktif</label>
+            <button class="icon-btn danger" onclick="removeVarianRow(${i})" style="margin:0;">Hapus</button>
+        </div>`).join('') || '<div class="muted" style="font-size:13px;">Belum ada varian.</div>';
+
+    wrap.querySelectorAll('[data-varian-i]').forEach(el => {
+        const type = el.type === 'checkbox' ? 'change' : 'input';
+        el.addEventListener(type, () => {
+            const row = Number(el.dataset.varianI);
+            const field = el.dataset.varianF;
+            const v = VARIAN.variants[row];
+            if (field === 'is_active') v[field] = el.checked;
+            else if (field === 'price' || field === 'multiplier') v[field] = Number(el.value) || 0;
+            else v[field] = el.value;
+        });
+    });
+}
+
+function addAddonRow() { VARIAN.addons.push({ name: '', price: 0, ingredient_id: '', ingredient_quantity: '', is_active: true }); renderAddonRows(); }
+function removeAddonRow(idx) { VARIAN.addons.splice(idx, 1); renderAddonRows(); }
+
+function renderAddonRows() {
+    const wrap = document.getElementById('addon-rows');
+    const ingOptions = APP.ingredients.filter(i => i.is_active).map(i =>
+        `<option value="${i.id}"></option>`
+    ).join('');
+    wrap.innerHTML = VARIAN.addons.map((a, i) => `
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+            <input class="input" style="flex:2;padding:7px 10px;" value="${esc(a.name)}" data-addon-i="${i}" data-addon-f="name" placeholder="Nama (cth: Extra Shot)">
+            <input class="input" type="number" min="0" step="any" style="flex:1;padding:7px 10px;" value="${a.price}" data-addon-i="${i}" data-addon-f="price" placeholder="Harga (Rp)">
+            <select class="input" style="flex:1.2;padding:7px 10px;" data-addon-i="${i}" data-addon-f="ingredient_id">
+                <option value="">- Tanpa bahan -</option>
+                ${APP.ingredients.filter(i => i.is_active).map(ing => `<option value="${ing.id}" ${String(a.ingredient_id) === String(ing.id) ? 'selected' : ''}>${ing.name}</option>`).join('')}
+            </select>
+            <input class="input" type="number" min="0" step="any" style="flex:1;padding:7px 10px;" value="${a.ingredient_quantity}" data-addon-i="${i}" data-addon-f="ingredient_quantity" placeholder="Jumlah bahan">
+            <label class="muted" style="font-size:12px;white-space:nowrap;"><input type="checkbox" ${a.is_active ? 'checked' : ''} data-addon-i="${i}" data-addon-f="is_active"> Aktif</label>
+            <button class="icon-btn danger" onclick="removeAddonRow(${i})" style="margin:0;">Hapus</button>
+        </div>`).join('') || '<div class="muted" style="font-size:13px;">Belum ada add-on.</div>';
+
+    wrap.querySelectorAll('[data-addon-i]').forEach(el => {
+        const type = el.type === 'checkbox' ? 'change' : 'input';
+        el.addEventListener(type, () => {
+            const row = Number(el.dataset.addonI);
+            const field = el.dataset.addonF;
+            const a = VARIAN.addons[row];
+            if (field === 'is_active') a[field] = el.checked;
+            else if (field === 'price' || field === 'ingredient_quantity') a[field] = el.value === '' ? '' : Number(el.value);
+            else a[field] = el.value;
+        });
+    });
+}
+
+async function saveVarian() {
+    if (!VARIAN.productId) return;
+    const variants = VARIAN.variants.filter(v => v.name.trim()).map(v => ({
+        name: v.name.trim(),
+        price: Number(v.price) || 0,
+        multiplier: Number(v.multiplier) || 1,
+        is_active: v.is_active,
+    }));
+    const addons = VARIAN.addons.filter(a => a.name.trim()).map(a => ({
+        name: a.name.trim(),
+        price: Number(a.price) || 0,
+        ingredient_id: a.ingredient_id ? Number(a.ingredient_id) : null,
+        ingredient_quantity: a.ingredient_quantity === '' || a.ingredient_quantity == null ? null : Number(a.ingredient_quantity),
+        unit: a.ingredient_id ? (APP.ingredients.find(i => i.id == a.ingredient_id)?.unit || null) : null,
+        is_active: a.is_active,
+    }));
+    try {
+        await Promise.all([
+            apiFetch(`/products/${VARIAN.productId}/variants`, { method: 'POST', body: JSON.stringify({ variants }) }),
+            apiFetch(`/products/${VARIAN.productId}/addons`, { method: 'POST', body: JSON.stringify({ addons }) }),
+        ]);
+        const p = APP.products.find(p => p.id === VARIAN.productId);
+        if (p) { p.variants = variants; p.addons = addons; }
+        closeModal('modal-varian');
+        renderAll();
+        showToast('Varian & add-on berhasil disimpan.');
+    } catch (e) {
+        showToast(e.message || 'Gagal menyimpan varian & add-on.');
+    }
 }
 
 /* ============================ KATEGORI ============================ */
@@ -861,8 +1146,9 @@ function renderTransaksi() {
             <td style="font-weight:700;">${rupiah(t.total)}</td>
             <td>${rupiah(t.paid_amount || t.paid)}</td>
             <td>${rupiah(t.change_amount || t.change)}</td>
+            <td>${t._server ? `<a class="icon-btn" href="${(window.__base_url || window.location.origin)}/transactions/${t.id}/receipt" target="_blank">Struk</a>` : '-'}</td>
         </tr>
-    `).join('') || `<tr><td colspan="11"><div class="empty-state"><div class="em-ic">&#129535;</div>Tidak ada transaksi ditemukan.</div></td></tr>`;
+    `).join('') || `<tr><td colspan="12"><div class="empty-state"><div class="em-ic">&#129535;</div>Tidak ada transaksi ditemukan.</div></td></tr>`;
 }
 
 /* ============================ LAPORAN ============================ */
@@ -1743,6 +2029,15 @@ Object.assign(window, {
     openModal,
     addToCart,
     changeQty,
+    openProductPicker,
+    confirmAddPick,
+    openVarianModal,
+    addVarianRow,
+    removeVarianRow,
+    addAddonRow,
+    removeAddonRow,
+    saveVarian,
+    savePengaturan,
     editProduk,
     toggleProdukStatus,
     deleteProduk,

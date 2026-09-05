@@ -2,9 +2,10 @@
 
 namespace Tests\Feature;
 
-use App\Models\User;
 use App\Models\Category;
 use App\Models\Product;
+use App\Models\Transaction;
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -83,5 +84,69 @@ class TransactionTest extends TestCase
             'type' => 'out',
             'quantity' => 2,
         ]);
+    }
+
+    public function test_invoice_number_is_generated_by_server_when_omitted(): void
+    {
+        $category = Category::create(['name' => 'Coffee', 'slug' => 'coffee']);
+        $product = Product::create([
+            'name' => 'Espresso',
+            'category_id' => $category->id,
+            'price' => 15000,
+            'cost' => 5000,
+            'stock' => 50,
+        ]);
+
+        $response = $this->actingAs($this->user)->postJson('/transactions', [
+            'subtotal' => 15000,
+            'discount' => 0,
+            'tax' => 0,
+            'total' => 15000,
+            'paid_amount' => 20000,
+            'change_amount' => 5000,
+            'details' => [
+                ['product_id' => $product->id, 'quantity' => 1, 'price' => 15000],
+            ],
+        ]);
+
+        $response->assertStatus(201);
+        $invoice = $response->json('invoice_number');
+        $this->assertMatchesRegularExpression('/^INV-\d{8}-\d{4}$/', $invoice);
+        $this->assertDatabaseHas('transactions', [
+            'id' => $response->json('id'),
+            'invoice_number' => $invoice,
+        ]);
+        $this->assertSame(1, Transaction::where('invoice_number', $invoice)->count());
+    }
+
+    public function test_receipt_endpoint_returns_pdf_for_stored_transaction(): void
+    {
+        $category = Category::create(['name' => 'Coffee', 'slug' => 'coffee']);
+        $product = Product::create([
+            'name' => 'Espresso',
+            'category_id' => $category->id,
+            'price' => 15000,
+            'cost' => 5000,
+            'stock' => 50,
+        ]);
+
+        $response = $this->actingAs($this->user)->postJson('/transactions', [
+            'subtotal' => 15000,
+            'discount' => 0,
+            'tax' => 0,
+            'total' => 15000,
+            'paid_amount' => 20000,
+            'change_amount' => 5000,
+            'details' => [
+                ['product_id' => $product->id, 'quantity' => 1, 'price' => 15000],
+            ],
+        ]);
+
+        $transactionId = $response->json('id');
+
+        $this->actingAs($this->user)
+            ->get("/transactions/{$transactionId}/receipt")
+            ->assertOk()
+            ->assertHeader('content-type', 'application/pdf');
     }
 }

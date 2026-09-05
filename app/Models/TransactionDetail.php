@@ -2,8 +2,8 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
 
 class TransactionDetail extends Model
 {
@@ -12,6 +12,8 @@ class TransactionDetail extends Model
     protected $fillable = [
         'transaction_id',
         'product_id',
+        'product_variant_id',
+        'addons',
         'quantity',
         'price',
         'subtotal',
@@ -20,6 +22,7 @@ class TransactionDetail extends Model
     protected $casts = [
         'price' => 'decimal:2',
         'subtotal' => 'decimal:2',
+        'addons' => 'array',
     ];
 
     public function transaction()
@@ -30,5 +33,10 @@ class TransactionDetail extends Model
     public function product()
     {
         return $this->belongsTo(Product::class);
+    }
+
+    public function variant()
+    {
+        return $this->belongsTo(ProductVariant::class, 'product_variant_id');
     }
 }

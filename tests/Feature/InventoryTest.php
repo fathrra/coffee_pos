@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\Category;
 use App\Models\Ingredient;
 use App\Models\Product;
+use App\Models\ProductAddon;
+use App\Models\ProductVariant;
 use App\Models\Recipe;
 use App\Models\RecipeIngredient;
 use App\Models\StockMovement;
@@ -331,5 +333,131 @@ class InventoryTest extends TestCase
 
         $this->assertDatabaseMissing('recipes', ['product_id' => $cappuccino->id]);
         $this->assertDatabaseCount('recipe_ingredients', 0);
+    }
+
+    public function test_sale_with_variant_multiplier_deducts_scaled_ingredients(): void
+    {
+        $kopi = Ingredient::where('name', 'Kopi Arabica')->first();
+        $susu = Ingredient::where('name', 'Susu UHT')->first();
+        $cup = Ingredient::where('name', 'Cup 16 oz')->first();
+
+        $latte = $this->createCoffeeProduct('Latte Varian', 18000);
+        $this->attachRecipe($latte, [[$kopi->id, 18, 'gram'], [$susu->id, 150, 'ml'], [$cup->id, 1, 'pcs']]);
+
+        $variant = ProductVariant::create([
+            'product_id' => $latte->id,
+            'name' => 'Double',
+            'price' => 5000,
+            'multiplier' => 2,
+            'is_active' => true,
+        ]);
+
+        $this->actingAs($this->admin)->postJson('/transactions', [
+            'subtotal' => 23000,
+            'discount' => 0,
+            'tax' => 0,
+            'total' => 23000,
+            'paid_amount' => 30000,
+            'change_amount' => 7000,
+            'details' => [
+                [
+                    'product_id' => $latte->id,
+                    'quantity' => 1,
+                    'price' => 23000,
+                    'variant_id' => $variant->id,
+                    'addons' => [],
+                ],
+            ],
+        ])->assertStatus(201);
+
+        $this->assertEquals(964, Ingredient::find($kopi->id)->current_stock);
+        $this->assertEquals(4700, Ingredient::find($susu->id)->current_stock);
+        $this->assertEquals(98, Ingredient::find($cup->id)->current_stock);
+
+        $this->assertDatabaseHas('transaction_details', [
+            'transaction_id' => Transaction::max('id'),
+            'product_variant_id' => $variant->id,
+        ]);
+    }
+
+    public function test_sale_with_addon_deducts_addon_ingredient_and_snapshots_addons(): void
+    {
+        $kopi = Ingredient::where('name', 'Kopi Arabica')->first();
+        $susu = Ingredient::where('name', 'Susu UHT')->first();
+        $cup = Ingredient::where('name', 'Cup 16 oz')->first();
+
+        $latte = $this->createCoffeeProduct('Latte Addon', 18000);
+        $this->attachRecipe($latte, [[$kopi->id, 18, 'gram'], [$susu->id, 150, 'ml'], [$cup->id, 1, 'pcs']]);
+
+        $addon = ProductAddon::create([
+            'product_id' => $latte->id,
+            'name' => 'Extra Shot',
+            'price' => 5000,
+            'ingredient_id' => $kopi->id,
+            'ingredient_quantity' => 10,
+            'unit' => 'gram',
+            'is_active' => true,
+        ]);
+
+        $this->actingAs($this->admin)->postJson('/transactions', [
+            'subtotal' => 23000,
+            'discount' => 0,
+            'tax' => 0,
+            'total' => 23000,
+            'paid_amount' => 30000,
+            'change_amount' => 7000,
+            'details' => [
+                [
+                    'product_id' => $latte->id,
+                    'quantity' => 1,
+                    'price' => 23000,
+                    'addons' => [['id' => $addon->id, 'name' => 'Extra Shot', 'price' => 5000]],
+                ],
+            ],
+        ])->assertStatus(201);
+
+        $this->assertEquals(972, Ingredient::find($kopi->id)->current_stock);
+        $this->assertEquals(4850, Ingredient::find($susu->id)->current_stock);
+        $this->assertEquals(99, Ingredient::find($cup->id)->current_stock);
+
+        $detail = DB::table('transaction_details')
+            ->where('product_id', $latte->id)
+            ->first();
+        $this->assertNotNull($detail);
+        $this->assertSame('[{"id":'.$addon->id.',"name":"Extra Shot","price":5000}]', json_encode(json_decode($detail->addons)));
+    }
+
+    public function test_admin_can_save_variants_and_addons_for_product(): void
+    {
+        $kopi = Ingredient::where('name', 'Kopi Arabica')->first();
+        $latte = $this->createCoffeeProduct('Latte Admin', 18000);
+
+        $this->actingAs($this->admin)->postJson("/products/{$latte->id}/variants", [
+            'variants' => [
+                ['name' => 'Small', 'price' => 0, 'multiplier' => 1, 'is_active' => true],
+                ['name' => 'Large', 'price' => 5000, 'multiplier' => 1.5, 'is_active' => true],
+            ],
+        ])->assertStatus(200);
+
+        $this->actingAs($this->admin)->postJson("/products/{$latte->id}/addons", [
+            'addons' => [
+                ['name' => 'Extra Shot', 'price' => 5000, 'ingredient_id' => $kopi->id, 'ingredient_quantity' => 10, 'unit' => 'gram', 'is_active' => true],
+            ],
+        ])->assertStatus(200);
+
+        $this->assertDatabaseCount('product_variants', 2);
+        $this->assertDatabaseHas('product_addons', ['product_id' => $latte->id, 'name' => 'Extra Shot', 'ingredient_id' => $kopi->id]);
+    }
+
+    public function test_save_variants_requires_admin_role(): void
+    {
+        $kasir = User::factory()->create(['role' => 'kasir']);
+        $latte = $this->createCoffeeProduct('Latte Kasir', 18000);
+
+        $this->actingAs($kasir)->postJson("/products/{$latte->id}/variants", [
+            'variants' => [['name' => 'Large', 'price' => 5000, 'multiplier' => 1.5, 'is_active' => true]],
+        ])->assertStatus(403);
+
+        $this->assertDatabaseCount('product_variants', 0);
     }
 }

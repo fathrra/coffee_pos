@@ -193,7 +193,7 @@
         </div>
         <div class="card table-wrap">
             <table>
-                <thead><tr><th>Invoice</th><th>Tanggal</th><th>Atas Nama</th><th>Kasir</th><th>Item</th><th>Subtotal</th><th>Diskon</th><th>Pajak</th><th>Total</th><th>Bayar</th><th>Kembalian</th></tr></thead>
+                <thead><tr><th>Invoice</th><th>Tanggal</th><th>Atas Nama</th><th>Kasir</th><th>Item</th><th>Subtotal</th><th>Diskon</th><th>Pajak</th><th>Total</th><th>Bayar</th><th>Kembalian</th><th>Struk</th></tr></thead>
                 <tbody id="tx-table"></tbody>
             </table>
         </div>
@@ -260,6 +260,31 @@
                 <thead><tr><th>Nama</th><th>Email</th><th>Role</th><th>Dibuat</th><th></th></tr></thead>
                 <tbody id="users-table"></tbody>
             </table>
+        </div>
+    </section>
+
+    {{-- ===================== PENGATURAN ===================== --}}
+    <section class="page {{ ($activePage ?? '') === 'pengaturan' ? 'active' : '' }}" id="page-pengaturan">
+        <div class="topbar">
+            <div>
+                <h1 class="page-title">Pengaturan</h1>
+                <div class="page-sub">Pengaturan identitas toko dan struk</div>
+            </div>
+            <div class="role-pill">
+                <span class="avatar">{{ substr(auth()->user()->name, 0, 1) }}</span>
+                {{ auth()->user()->name }}
+                <span class="muted" style="font-weight:700;">&middot; {{ ucfirst(auth()->user()->role) }}</span>
+            </div>
+        </div>
+        <div class="card card-pad" style="max-width:560px;">
+            <div class="section-title">Identitas Toko</div>
+            <div class="field"><label>Nama Toko</label><input class="input" id="set-store-name"></div>
+            <div class="field"><label>Alamat</label><textarea class="input" id="set-store-address" rows="2"></textarea></div>
+            <div class="field"><label>Footer Struk</label><input class="input" id="set-receipt-footer" placeholder="Terima kasih atas kunjungan Anda!"></div>
+            <div class="field"><label>Pajak Default (%)</label><input class="input" id="set-default-tax" type="number" min="0" max="100" value="0"></div>
+            <div class="modal-actions" style="justify-content:flex-end;padding-top:8px;">
+                <button class="btn btn-primary" onclick="savePengaturan()">Simpan Pengaturan</button>
+            </div>
         </div>
     </section>
 
@@ -559,6 +584,40 @@
             <div id="struk-content" class="receipt"></div>
             <div class="modal-actions">
                 <button class="btn btn-primary" onclick="closeModal('modal-struk')" style="flex:none;width:100%;">Tutup</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Pilih Varian/Add-on (POS) -->
+    <div class="modal-bg" id="modal-pick-product">
+        <div class="modal">
+            <h3>Pilih Varian &amp; Tambahan</h3>
+            <div id="pick-product-content"></div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" onclick="closeModal('modal-pick-product')">Batal</button>
+                <button class="btn btn-primary" onclick="confirmAddPick()">Tambah ke Keranjang</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Kelola Varian & Add-on (Admin) -->
+    <div class="modal-bg" id="modal-varian">
+        <div class="modal" style="max-width:680px;">
+            <h3>Varian &amp; Add-on &mdash; <span id="varian-product-name"></span></h3>
+            <div class="field">
+                <label>Varian (mempengaruhi harga &amp; pemakaian bahan)</label>
+                <div id="varian-rows"></div>
+                <button class="btn btn-ghost" onclick="addVarianRow()" style="margin-top:4px;padding:6px 12px;font-size:13px;">+ Tambah Varian</button>
+            </div>
+            <div class="field">
+                <label>Add-on / Tambahan</label>
+                <div id="addon-rows"></div>
+                <button class="btn btn-ghost" onclick="addAddonRow()" style="margin-top:4px;padding:6px 12px;font-size:13px;">+ Tambah Add-on</button>
+            </div>
+            <div class="muted" style="font-size:12px;margin-top:6px;">Multiplier 1 = ukuran standar. Varian dengan multiplier 2 memakai bahan 2 kali lipat. Add-on hanya memakai bahan bila dipilih.</div>
+            <div class="modal-actions">
+                <button class="btn btn-ghost" onclick="closeModal('modal-varian')">Batal</button>
+                <button class="btn btn-primary" onclick="saveVarian()">Simpan</button>
             </div>
         </div>
     </div>

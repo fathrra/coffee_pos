@@ -31,8 +31,10 @@
 </head>
 <body>
     <div class="center">
-        <div class="title">CoffeePOS</div>
-        <div class="subtitle">Kopi Nusantara POS System</div>
+        <div class="title">{{ $storeName }}</div>
+        @if($storeAddress)
+        <div class="subtitle">{{ $storeAddress }}</div>
+        @endif
     </div>
 
     <div class="divider"></div>
@@ -73,7 +75,7 @@
     <div class="divider"></div>
 
     <div class="footer">
-        Terima kasih atas kunjungan Anda!<br>
+        {{ $receiptFooter }}<br>
         Sampai jumpa lagi
     </div>
 </body>

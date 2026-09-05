@@ -2,8 +2,6 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-
 class DashboardController extends Controller
 {
     public function index()
@@ -54,5 +52,10 @@ class DashboardController extends Controller
     public function users()
     {
         return view('app', ['activePage' => 'users']);
+    }
+
+    public function pengaturan()
+    {
+        return view('app', ['activePage' => 'pengaturan']);
     }
 }

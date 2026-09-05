@@ -1,22 +1,23 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
-use App\Http\Controllers\DashboardController;
-use App\Http\Controllers\ProductController;
 use App\Http\Controllers\CategoryController;
-use App\Http\Controllers\TransactionController;
-use App\Http\Controllers\UserController;
-use App\Http\Controllers\StockMovementController;
-use App\Http\Controllers\ReportController;
+use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\IngredientController;
-use App\Http\Controllers\SupplierController;
-use App\Http\Controllers\RecipeController;
-use App\Http\Controllers\StockInController;
-use App\Http\Controllers\StockOutController;
-use App\Http\Controllers\StockAdjustmentController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\InventoryReportController;
+use App\Http\Controllers\ProductController;
+use App\Http\Controllers\RecipeController;
+use App\Http\Controllers\ReportController;
+use App\Http\Controllers\SettingController;
+use App\Http\Controllers\StockAdjustmentController;
+use App\Http\Controllers\StockInController;
+use App\Http\Controllers\StockMovementController;
+use App\Http\Controllers\StockOutController;
+use App\Http\Controllers\SupplierController;
+use App\Http\Controllers\TransactionController;
+use App\Http\Controllers\UserController;
+use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
     return redirect()->route('login');
@@ -60,8 +61,17 @@ Route::middleware('auth')->group(function () {
         ->name('app.users')
         ->middleware('admin');
 
+    Route::get('/pengaturan', [DashboardController::class, 'pengaturan'])
+        ->name('app.pengaturan')
+        ->middleware('admin');
+
     Route::post('/logout', [AuthController::class, 'logout'])
         ->name('logout');
+
+    // Settings – readable by everyone, only admin can change them
+    Route::get('/settings', [SettingController::class, 'index']);
+    Route::post('/settings', [SettingController::class, 'store'])
+        ->middleware('admin');
 
     // API routes - admin only
     Route::middleware('admin')->group(function () {
@@ -74,6 +84,11 @@ Route::middleware('auth')->group(function () {
         Route::apiResource('suppliers', SupplierController::class);
         Route::apiResource('recipes', RecipeController::class)->only(['index', 'store', 'show', 'update', 'destroy']);
         Route::get('recipes/menu/{product}', [RecipeController::class, 'menu']);
+
+        Route::get('products/{product}/variants', [ProductController::class, 'variants']);
+        Route::post('products/{product}/variants', [ProductController::class, 'saveVariants']);
+        Route::get('products/{product}/addons', [ProductController::class, 'addons']);
+        Route::post('products/{product}/addons', [ProductController::class, 'saveAddons']);
 
         Route::get('inventory/summary', [InventoryController::class, 'summary']);
         Route::get('inventory/low-stock', [InventoryController::class, 'lowStock']);

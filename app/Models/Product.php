@@ -3,8 +3,8 @@
 namespace App\Models;
 
 use App\Services\InventoryService;
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
 
 class Product extends Model
 {
@@ -34,6 +34,16 @@ class Product extends Model
     public function recipe()
     {
         return $this->hasOne(Recipe::class);
+    }
+
+    public function variants()
+    {
+        return $this->hasMany(ProductVariant::class);
+    }
+
+    public function addons()
+    {
+        return $this->hasMany(ProductAddon::class);
     }
 
     /**
