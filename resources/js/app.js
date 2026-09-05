@@ -515,8 +515,9 @@ async function processPayment() {
     const now = new Date();
     const invoice = 'INV-' + now.toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(APP.transactions.length + 1).padStart(3, '0');
 
+    let data;
     try {
-        const data = await apiFetch('/transactions', {
+        data = await apiFetch('/transactions', {
             method: 'POST',
             body: JSON.stringify({
                 invoice_number: invoice,
@@ -756,26 +757,21 @@ async function saveKategori() {
 
     try {
         if (id) {
-            const data = await apiFetch(`/categories/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
+            await apiFetch(`/categories/${id}`, { method: 'PUT', body: JSON.stringify({ name }) });
             const c = APP.categories.find(c => c.id == id);
             if (c) c.name = name;
             showToast('Kategori berhasil diperbarui.');
+            closeModal('modal-kategori');
         } else {
             const data = await apiFetch('/categories', { method: 'POST', body: JSON.stringify({ name }) });
             APP.categories.push(data.data || { id: APP.nextCatId++, name });
             showToast('Kategori berhasil ditambahkan.');
+            closeModal('modal-kategori');
         }
     } catch (e) {
-        if (id) {
-            const c = APP.categories.find(c => c.id == id);
-            if (c) c.name = name;
-            showToast('Kategori berhasil diperbarui.');
-        } else {
-            APP.categories.push({ id: APP.nextCatId++, name });
-            showToast('Kategori berhasil ditambahkan.');
-        }
+        showToast(e.message || 'Gagal menyimpan kategori.');
+        return;
     }
-    closeModal('modal-kategori');
     renderAll();
 }
 
@@ -832,7 +828,13 @@ async function saveStokAdjust() {
         if (jumlah > p.stock) { showToast('Jumlah pengurangan melebihi stok tersedia.'); return; }
         p.stock -= jumlah;
     }
-    try { await apiFetch(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ stock: p.stock }) }); } catch (e) {}
+    try {
+        await apiFetch(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ stock: p.stock }) });
+    } catch (e) {
+        if (jenis === 'tambah') p.stock -= jumlah; else p.stock += jumlah;
+        showToast(e.message || 'Gagal menyesuaikan stok.');
+        return;
+    }
     closeModal('modal-stok');
     renderAll();
     showToast('Stok berhasil disesuaikan.');
@@ -1002,20 +1004,17 @@ async function saveUser() {
             const idx = APP.users.findIndex(u => u.id == id);
             if (idx >= 0) APP.users[idx] = { ...APP.users[idx], name, email, role };
             showToast('User berhasil diperbarui.');
+            closeModal('modal-user');
         } else {
             const data = await apiFetch('/users', { method: 'POST', body: JSON.stringify(payload) });
             APP.users.push(data.data || { id: Date.now(), name, email, role });
             showToast('User berhasil ditambahkan.');
+            closeModal('modal-user');
         }
     } catch (e) {
-        if (!id) {
-            APP.users.push({ id: Date.now(), name, email, role });
-            showToast('User berhasil ditambahkan.');
-        } else {
-            showToast('Gagal memperbarui user.');
-        }
+        showToast(e.message || 'Gagal menyimpan user.');
+        return;
     }
-    closeModal('modal-user');
     renderUsers();
 }
 

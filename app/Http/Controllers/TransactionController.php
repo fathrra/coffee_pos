@@ -117,6 +117,7 @@ class TransactionController extends Controller
     {
         $transaction->load(['user', 'details.product']);
 
+        /** @var \Barryvdh\DomPDF\PDF $pdf */
         $pdf = Pdf::loadView('pdf.receipt', [
             'transaction' => $transaction,
             'cashier' => $transaction->user ? $transaction->user->name : '-',
@@ -126,7 +127,8 @@ class TransactionController extends Controller
             }),
         ]);
 
-        $pdf->setPaper([0, 0, 80, 295], 'portrait');
+        // Ukuran kertas struk 80 x 295 mm (dalam point: 1 mm = 2.8346 pt)
+        $pdf->setPaper([0, 0, 226.77, 836.22], 'portrait');
 
         return $pdf->download('struk-' . $transaction->invoice_number . '.pdf');
     }
