@@ -408,6 +408,7 @@ tr:last-child td { border-bottom: none; }
     box-shadow: var(--shadow-brutal-lg);
 }
 .toast.show { opacity: 1; transform: translateY(0); }
+.toast.success { background: var(--green); border-color: var(--green); color: #fff; }
 
 /* ===== Report Period Buttons ===== */
 .report-period { display: flex; gap: 8px; margin-bottom: 18px; }

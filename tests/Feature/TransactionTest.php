@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Http\Controllers\TransactionController;
 use App\Models\Category;
 use App\Models\Product;
 use App\Models\Transaction;
@@ -117,6 +118,58 @@ class TransactionTest extends TestCase
             'invoice_number' => $invoice,
         ]);
         $this->assertSame(1, Transaction::where('invoice_number', $invoice)->count());
+    }
+
+    public function test_store_retries_with_new_invoice_when_generated_number_collides(): void
+    {
+        $category = Category::create(['name' => 'Coffee', 'slug' => 'coffee']);
+        $product = Product::create([
+            'name' => 'Espresso',
+            'category_id' => $category->id,
+            'price' => 15000,
+            'cost' => 5000,
+            'stock' => 50,
+        ]);
+
+        Transaction::create([
+            'invoice_number' => 'INV-RACETEST-0001',
+            'customer_name' => null,
+            'user_id' => $this->user->id,
+            'subtotal' => 0,
+            'discount' => 0,
+            'tax' => 0,
+            'total' => 0,
+            'paid_amount' => 0,
+            'change_amount' => 0,
+        ]);
+
+        $calls = 0;
+        $mock = $this->partialMock(TransactionController::class);
+        $mock->shouldAllowMockingProtectedMethods();
+        $mock->shouldReceive('generateInvoiceNumber')->andReturnUsing(function () use (&$calls) {
+            $calls++;
+
+            return $calls === 1 ? 'INV-RACETEST-0001' : 'INV-RACETEST-0002';
+        });
+
+        $response = $this->actingAs($this->user)->postJson('/transactions', [
+            'subtotal' => 15000,
+            'discount' => 0,
+            'tax' => 0,
+            'total' => 15000,
+            'paid_amount' => 20000,
+            'change_amount' => 5000,
+            'details' => [
+                ['product_id' => $product->id, 'quantity' => 1, 'price' => 15000],
+            ],
+        ]);
+
+        $response->assertStatus(201);
+        $this->assertSame(2, $calls);
+        $this->assertDatabaseHas('transactions', [
+            'invoice_number' => 'INV-RACETEST-0002',
+            'subtotal' => 15000,
+        ]);
     }
 
     public function test_receipt_endpoint_returns_pdf_for_stored_transaction(): void

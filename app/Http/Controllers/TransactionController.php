@@ -9,6 +9,7 @@ use App\Models\Transaction;
 use App\Models\TransactionDetail;
 use App\Services\InventoryService;
 use Barryvdh\DomPDF\Facade\Pdf;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -54,76 +55,95 @@ class TransactionController extends Controller
             'details.*.addons.*.price' => 'required|numeric|min:0',
         ]);
 
-        return DB::transaction(function () use ($validated, $request) {
-            $inventory = app(InventoryService::class);
+        $attempts = 0;
 
-            // Validate ingredient availability before creating the transaction.
-            $ingredientRequirements = $inventory->requiredIngredients(
-                collect($validated['details']),
-            );
-            $inventory->assertStockAvailable($ingredientRequirements);
+        do {
+            try {
+                return DB::transaction(function () use ($validated, $request) {
+                    $inventory = app(InventoryService::class);
 
-            $transaction = Transaction::create([
-                'invoice_number' => $validated['invoice_number'] ?? $this->generateInvoiceNumber(),
-                'customer_name' => $validated['customer_name'] ?? null,
-                'user_id' => $request->user()->id,
-                'subtotal' => $validated['subtotal'],
-                'discount' => $validated['discount'],
-                'tax' => $validated['tax'],
-                'total' => $validated['total'],
-                'paid_amount' => $validated['paid_amount'],
-                'change_amount' => $validated['change_amount'],
-            ]);
+                    // Validate ingredient availability before creating the transaction.
+                    $ingredientRequirements = $inventory->requiredIngredients(
+                        collect($validated['details']),
+                    );
+                    $inventory->assertStockAvailable($ingredientRequirements);
 
-            $products = Product::with(['recipe.recipeIngredients.ingredient', 'variants', 'addons'])
-                ->whereIn('id', collect($validated['details'])->pluck('product_id'))
-                ->get()
-                ->keyBy('id');
+                    $transaction = Transaction::create([
+                        'invoice_number' => $validated['invoice_number'] ?? $this->generateInvoiceNumber(),
+                        'customer_name' => $validated['customer_name'] ?? null,
+                        'user_id' => $request->user()->id,
+                        'subtotal' => $validated['subtotal'],
+                        'discount' => $validated['discount'],
+                        'tax' => $validated['tax'],
+                        'total' => $validated['total'],
+                        'paid_amount' => $validated['paid_amount'],
+                        'change_amount' => $validated['change_amount'],
+                    ]);
 
-            foreach ($validated['details'] as $detail) {
-                TransactionDetail::create([
-                    'transaction_id' => $transaction->id,
-                    'product_id' => $detail['product_id'],
-                    'product_variant_id' => $detail['variant_id'] ?? null,
-                    'addons' => $detail['addons'] ?? [],
-                    'quantity' => $detail['quantity'],
-                    'price' => $detail['price'],
-                    'subtotal' => $detail['price'] * $detail['quantity'],
-                ]);
+                    $products = Product::with(['recipe.recipeIngredients.ingredient', 'variants', 'addons'])
+                        ->whereIn('id', collect($validated['details'])->pluck('product_id'))
+                        ->get()
+                        ->keyBy('id');
 
-                $product = $products->get((int) $detail['product_id']);
+                    foreach ($validated['details'] as $detail) {
+                        TransactionDetail::create([
+                            'transaction_id' => $transaction->id,
+                            'product_id' => $detail['product_id'],
+                            'product_variant_id' => $detail['variant_id'] ?? null,
+                            'addons' => $detail['addons'] ?? [],
+                            'quantity' => $detail['quantity'],
+                            'price' => $detail['price'],
+                            'subtotal' => $detail['price'] * $detail['quantity'],
+                        ]);
 
-                if ($product && $product->hasActiveRecipe()) {
-                    // Menu stock is computed from ingredients, so there is
-                    // nothing to decrement on the products table.
-                    continue;
+                        $product = $products->get((int) $detail['product_id']);
+
+                        if ($product && $product->hasActiveRecipe()) {
+                            // Menu stock is computed from ingredients, so there is
+                            // nothing to decrement on the products table.
+                            continue;
+                        }
+
+                        Product::where('id', $detail['product_id'])->decrement('stock', $detail['quantity']);
+
+                        StockMovement::create([
+                            'product_id' => $detail['product_id'],
+                            'user_id' => $request->user()->id,
+                            'type' => 'out',
+                            'quantity' => $detail['quantity'],
+                            'description' => 'Penjualan via '.$transaction->invoice_number,
+                        ]);
+                    }
+
+                    // Deduct ingredient stock for every menu that has a recipe
+                    // (variant multipliers and add-on consumption included).
+                    $inventory->deductIngredientsForSale(
+                        collect($validated['details']),
+                        $request->user(),
+                        $transaction->id,
+                        $transaction->invoice_number,
+                    );
+
+                    return response()->json($transaction->load(['user', 'details.product', 'details.variant']), 201);
+                });
+            } catch (QueryException $e) {
+                // Two kasir can ring a sale at the same millisecond and both
+                // compute the same invoice number; the loser hits the unique
+                // constraint. Retry with a freshly generated number instead
+                // of failing the sale.
+                $isDuplicateInvoice = in_array($e->errorInfo[0] ?? null, ['23505', '23000'], true)
+                    && str_contains($e->getMessage(), 'invoice_number');
+
+                if (! $isDuplicateInvoice || $attempts >= 3) {
+                    throw $e;
                 }
 
-                Product::where('id', $detail['product_id'])->decrement('stock', $detail['quantity']);
-
-                StockMovement::create([
-                    'product_id' => $detail['product_id'],
-                    'user_id' => $request->user()->id,
-                    'type' => 'out',
-                    'quantity' => $detail['quantity'],
-                    'description' => 'Penjualan via '.$transaction->invoice_number,
-                ]);
+                $attempts++;
             }
-
-            // Deduct ingredient stock for every menu that has a recipe
-            // (variant multipliers and add-on consumption included).
-            $inventory->deductIngredientsForSale(
-                collect($validated['details']),
-                $request->user(),
-                $transaction->id,
-                $transaction->invoice_number,
-            );
-
-            return response()->json($transaction->load(['user', 'details.product', 'details.variant']), 201);
-        });
+        } while (true);
     }
 
-    private function generateInvoiceNumber(): string
+    protected function generateInvoiceNumber(): string
     {
         $date = now()->format('Ymd');
         $prefix = 'INV-'.$date.'-';

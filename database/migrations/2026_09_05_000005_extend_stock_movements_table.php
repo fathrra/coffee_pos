@@ -46,25 +46,29 @@ return new class extends Migration
                 ->change();
         });
 
-        // PostgreSQL CHECK constraint.
-        DB::statement("
-            ALTER TABLE stock_movements
-            DROP CONSTRAINT IF EXISTS stock_movements_type_check
-        ");
+        // PostgreSQL CHECK constraint (SQLite tidak mendukung DROP CONSTRAINT).
+        if (DB::getDriverName() === 'pgsql') {
+            DB::statement('
+                ALTER TABLE stock_movements
+                DROP CONSTRAINT IF EXISTS stock_movements_type_check
+            ');
 
-        DB::statement("
-            ALTER TABLE stock_movements
-            ADD CONSTRAINT stock_movements_type_check
-            CHECK (type IN ('in', 'out', 'sale', 'adjustment'))
-        ");
+            DB::statement("
+                ALTER TABLE stock_movements
+                ADD CONSTRAINT stock_movements_type_check
+                CHECK (type IN ('in', 'out', 'sale', 'adjustment'))
+            ");
+        }
     }
 
     public function down(): void
     {
-        DB::statement("
-            ALTER TABLE stock_movements
-            DROP CONSTRAINT IF EXISTS stock_movements_type_check
-        ");
+        if (DB::getDriverName() === 'pgsql') {
+            DB::statement('
+                ALTER TABLE stock_movements
+                DROP CONSTRAINT IF EXISTS stock_movements_type_check
+            ');
+        }
 
         Schema::table('stock_movements', function (Blueprint $table) {
             $table->dropForeign(['ingredient_id']);
@@ -75,7 +79,7 @@ return new class extends Migration
                 'after_stock',
                 'reference_type',
                 'reference_id',
-                'reason'
+                'reason',
             ]);
 
             $table->foreignId('product_id')

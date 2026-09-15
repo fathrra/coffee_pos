@@ -307,12 +307,13 @@ function stockStatus(stock) {
     if (stock <= 8) return { label: 'Stok Menipis', cls: 'badge-yellow' };
     return { label: 'Stok Aman', cls: 'badge-green' };
 }
-function showToast(msg) {
+function showToast(msg, kind = '', ms = 2200) {
     const t = document.getElementById('toast');
     t.textContent = msg;
+    t.classList.toggle('success', kind === 'success');
     t.classList.add('show');
     clearTimeout(window._toastTimer);
-    window._toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+    window._toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
 function esc(s) {
     return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -687,6 +688,13 @@ async function processPayment() {
     const sums = updateCartSums();
     if (APP.cart.length === 0 || sums.cash < sums.total) return;
 
+    const payBtn = document.getElementById('btn-pay');
+    if (payBtn.dataset.processing === '1') return;
+    const payLabel = payBtn.textContent;
+    payBtn.dataset.processing = '1';
+    payBtn.disabled = true;
+    payBtn.textContent = 'Menyimpan...';
+
     const customerName = document.getElementById('input-customer-name').value.trim();
 
     const details = APP.cart.map(c => ({
@@ -740,8 +748,14 @@ async function processPayment() {
         loadProducts();
         loadInventoryContext();
     } catch (e) {
-        showToast(e.message || 'Transaksi gagal disimpan. Stok tidak mencukupi?');
+        const raw = e.message || '';
+        const fallback = 'Gagal menyimpan transaksi. Coba lagi.';
+        showToast(/Server Error|Request failed|parse error/i.test(raw) ? fallback : raw || fallback);
         return;
+    } finally {
+        payBtn.textContent = payLabel;
+        payBtn.disabled = false;
+        delete payBtn.dataset.processing;
     }
 
     APP.lastTransactionId = data && data.id ? data.id : null;
@@ -778,7 +792,7 @@ async function processPayment() {
     document.getElementById('input-customer-name').value = '';
     renderCart();
     renderPosProducts();
-    showToast('Transaksi berhasil disimpan.');
+    showToast('Transaksi berhasil disimpan — '.concat(invoice), 'success', 3500);
 }
 
 /* ============================ PRODUK ============================ */
