@@ -33,7 +33,7 @@ const APP = {
 };
 
 /* ============================ INIT ============================ */
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     const meta = document.querySelector('meta[name="csrf-token"]');
     const token = meta ? meta.content : '';
 
@@ -44,12 +44,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('today-date').textContent = new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 
-    loadCategories();
-    loadProducts();
-    loadTransactions();
-    loadUsers();
-    loadSettings();
-    seedHistory();
     loadInventoryContext();
 
     setupNav();
@@ -59,6 +53,16 @@ document.addEventListener('DOMContentLoaded', () => {
     setupUsers();
     setupInventory();
     setupResep();
+    renderAll();
+
+    await Promise.allSettled([
+        loadCategories(),
+        loadProducts(),
+        loadTransactions(),
+        loadUsers(),
+        loadSettings(),
+    ]);
+    seedHistory();
     renderAll();
 });
 
@@ -715,13 +719,26 @@ async function processPayment() {
         APP.transactions.unshift({
             ...tx,
             _server: true,
+            subtotal: Number(tx.subtotal) || 0,
+            discount: Number(tx.discount) || 0,
+            tax: Number(tx.tax) || 0,
+            total: Number(tx.total) || 0,
+            paid_amount: Number(tx.paid_amount || tx.paid) || 0,
+            change_amount: Number(tx.change_amount || tx.change) || 0,
             date: new Date(tx.created_at || new Date()),
-            details,
+            details: details.map(d => ({
+                ...d,
+                quantity: Number(d.quantity) || 0,
+                price: Number(d.price) || 0,
+                subtotal: (Number(d.price) || 0) * (Number(d.quantity) || 0),
+            })),
             cashier: tx.cashier || APP.user.name,
         });
 
-        // Refresh stock (menu stock is computed from recipes on the server)
-        await Promise.allSettled([loadProducts(), loadInventoryContext()]);
+        // Refresh stok hanya di background supaya modal struk
+        // langsung tampil tanpa menunggu semua reload selesai.
+        loadProducts();
+        loadInventoryContext();
     } catch (e) {
         showToast(e.message || 'Transaksi gagal disimpan. Stok tidak mencukupi?');
         return;
